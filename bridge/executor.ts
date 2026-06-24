@@ -11,7 +11,7 @@ import * as ts from 'typescript';
 
 import { checkArchitecture, loadArchitectureConfig } from './architecture-checker';
 
-const REPO_ROOT = path.resolve(__dirname, '../../../');
+const REPO_ROOT = process.cwd();
 
 // ─── Interfaces ─────────────────────────────────────────────────────────────
 interface TaskContext {

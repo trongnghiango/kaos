@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from kaos.domain.models import Task, Workflow, ProposalOption, DecisionEngine, DecisionRule, ErrorClassification
-from kaos.domain.value_objects import ExecutionConfig, SessionMetadata
+from kaos.domain.value_objects import ExecutionConfig, SessionMetadata, AgentInstruction
 from kaos.application.ports import GitPort, StoragePort, GatekeeperPort, LLMProviderPort
 
 # Lấy log chuẩn của STAX Harness
@@ -147,7 +147,7 @@ class AnalyzeRequirementsUseCase:
                 instruction += f"\n\n⚠️ LƯU Ý QUAN TRỌNG: Hãy sửa cột 'depends_on' theo thông báo lỗi:\n{feedback_msg}"
 
             logger.info(f"🦆 [KAOS] Đang gọi Analyzer LLM (Attempt {attempts}/{max_retries})...")
-            exit_code, out_logs = await self.llm_provider.run_agent(instruction, timeout=float(self.config.timeout_secs_analyzer))
+            exit_code, out_logs = await self.llm_provider.run_agent(AgentInstruction.from_raw(instruction, timeout=float(self.config.timeout_secs_analyzer)))
 
             if exit_code != 0:
                 feedback_msg = f"Goose CLI runtime error: {out_logs[:300]}"
@@ -253,7 +253,7 @@ class ClassifyErrorUseCase:
 
         # Sử dụng cấu hình timeout_secs_gatekeeper động thay vì hardcode 45.0s
         timeout_val = float(self.config.timeout_secs_gatekeeper) if hasattr(self.config, 'timeout_secs_gatekeeper') else 120.0
-        exit_code, out_logs = await self.llm_provider.run_agent(instruction, timeout=timeout_val)
+        exit_code, out_logs = await self.llm_provider.run_agent(AgentInstruction.from_raw(instruction, timeout=timeout_val))
 
         # Fallback values if LLM fails
         default_classification = ErrorClassification(
@@ -362,7 +362,7 @@ class DetectScopeUseCase:
         logger.info("🦆 [KAOS Scope Detector] Đang gọi LLM phân tích...")
         # Sử dụng cấu hình timeout_secs_analyzer động thay vì hardcode 30.0s
         timeout_val = float(self.config.timeout_secs_analyzer) if hasattr(self.config, 'timeout_secs_analyzer') else 300.0
-        exit_code, out_logs = await self.llm_provider.run_agent(instruction, timeout=timeout_val)
+        exit_code, out_logs = await self.llm_provider.run_agent(AgentInstruction.from_raw(instruction, timeout=timeout_val))
 
         if exit_code != 0 or not self.storage.file_exists(out_file):
             logger.warning("⚠️ LLM Scope Detector thất bại hoặc không sinh ra file kết quả. Sử dụng fallback module='all'.")
@@ -588,7 +588,7 @@ class ExecuteWorkflowUseCase:
                     ctx_file_path=task_ctx_file.resolve(),
                     plan_file_path=plan_file.resolve()
                 )
-                await self.llm_provider.run_agent(plan_instruction, timeout=float(self.config.timeout_secs_planner))
+                await self.llm_provider.run_agent(AgentInstruction.from_raw(plan_instruction, timeout=float(self.config.timeout_secs_planner)))
 
             if self.storage.file_exists(plan_file):
                 try:
@@ -610,7 +610,7 @@ class ExecuteWorkflowUseCase:
                 coder_instruction += f"\n\nLƯU Ý: Lần code trước bị lỗi, hãy khắc phục các phản hồi sau:\n{feedback_msg}"
 
             logger.info(f"   🦆 [Coder] Đang gọi Coder Agent...")
-            exit_code, _ = await self.llm_provider.run_agent(coder_instruction, timeout=float(self.config.timeout_secs_coder))
+            exit_code, _ = await self.llm_provider.run_agent(AgentInstruction.from_raw(coder_instruction, timeout=float(self.config.timeout_secs_coder)))
 
             if exit_code != 0:
                 raw_err = f"Coder Agent Runtime Error (Exit code: {exit_code})."
@@ -646,7 +646,7 @@ class ExecuteWorkflowUseCase:
                 eval_ctx_file_path=eval_ctx_file.resolve(),
                 eval_out_file_path=eval_out_file.resolve()
             )
-            await self.llm_provider.run_agent(eval_instruction, timeout=float(self.config.timeout_secs_planner))
+            await self.llm_provider.run_agent(AgentInstruction.from_raw(eval_instruction, timeout=float(self.config.timeout_secs_planner)))
 
             verdict = "PASS"
             eval_issues = []
@@ -896,7 +896,7 @@ class AnalyzeCompatibilityUseCase:
             )
 
         logger.info(f"🦆 [KAOS] Đang gọi Analyzer LLM để sinh các Proposal Options tại: {output_json.name}...")
-        exit_code, out_logs = await self.llm_provider.run_agent(instruction, timeout=float(self.config.timeout_secs_analyzer))
+        exit_code, out_logs = await self.llm_provider.run_agent(AgentInstruction.from_raw(instruction, timeout=float(self.config.timeout_secs_analyzer)))
 
         if exit_code != 0:
             raise RuntimeError(f"Analyzer LLM chạy gặp lỗi (exit code {exit_code}): {out_logs[:500]}")

@@ -74,3 +74,27 @@ class AgentInstruction:
     # GooseCliAdapter sẽ dùng field này thay vì serialize toàn bộ object thành JSON.
     # Nếu để trống, GooseCliAdapter tự build từ skill_content + task_context.
     raw_instruction: str = ""
+
+    @classmethod
+    def from_raw(
+        cls,
+        instruction: str,
+        timeout: float,
+        skill_name: str = "unknown",
+        target_path: str = "",
+        output_file: str = "",
+    ) -> "AgentInstruction":
+        """
+        Factory method backward-compat: tạo AgentInstruction từ plain string.
+        Dùng cho use_cases.py để tránh phải refactor toàn bộ Prompts logic.
+        GooseCliAdapter sẽ dùng raw_instruction trực tiếp.
+        """
+        return cls(
+            skill_name=skill_name,
+            skill_content="",
+            task_context={},
+            target_path=target_path,
+            output_file=output_file,
+            timeout=timeout,
+            raw_instruction=instruction,
+        )

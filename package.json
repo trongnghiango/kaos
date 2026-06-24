@@ -1,0 +1,10 @@
+{
+  "name": "@tools/kaos",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Knowledge-Augmented Organization System (KAOS) Engine for STAX",
+  "dependencies": {
+    "tsx": "^4.7.1",
+    "yaml": "^2.4.1"
+  }
+}

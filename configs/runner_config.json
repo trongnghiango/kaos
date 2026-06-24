@@ -1,0 +1,38 @@
+{
+  "llm": {
+    "provider": "goose",
+    "providers": {
+      "goose": {
+        "max_turns": 50,
+        "timeout_secs": 300
+      },
+      "antigravity": {
+        "handshake_dir": "handshake",
+        "poll_interval_secs": 2.0,
+        "timeout_secs": 600,
+        "cleanup_stale_after_secs": 3600,
+        "watcher": {
+          "runner": "goose",
+          "max_concurrent": 3,
+          "poll_interval_secs": 2.0
+        }
+      }
+    }
+  },
+  "paths": {
+    "node_path": "/usr/bin/node",
+    "node_sandbox_path": "node",
+    "tsx_cli_relative": "node_modules/tsx/dist/cli.mjs",
+    "tsx_cli_sandbox": "/app/tools/kaos/node_modules/tsx/dist/cli.mjs"
+  },
+  "execution": {
+    "max_retries_coder": 5,
+    "max_retries_planner": 3,
+    "max_retries_analyzer": 2,
+    "timeout_secs_coder": 300,
+    "timeout_secs_planner": 180,
+    "timeout_secs_analyzer": 300,
+    "timeout_secs_gatekeeper": 120
+  }
+}
+

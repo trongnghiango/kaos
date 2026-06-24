@@ -1,0 +1,107 @@
+version: '3.8'
+
+services:
+  # Sandbox Environment chứa Node.js, k6, Python3 và các AI Skills
+  sandbox:
+    build:
+      context: ../../../
+      dockerfile: infra/docker/Dockerfile.sandbox
+    container_name: stax_ai_sandbox
+    tty: true
+    stdin_open: true
+    depends_on:
+      postgres_sandbox:
+        condition: service_healthy
+      redis_sandbox:
+        condition: service_healthy
+    env_file:
+      - ../../../backend/.env.development
+    environment:
+      - DB_HOST=postgres_sandbox
+      - REDIS_HOST=redis_sandbox
+      - DB_NAME=stax_sandbox
+      - DATABASE_URL=postgresql://postgres:postgres@postgres_sandbox:5432/stax_sandbox
+      - NODE_ENV=development
+      # Truyền cấu hình Goose host vào Container sandbox
+      - GOOSE_PROVIDER=openai
+      - OPENAI_HOST=http://host.docker.internal:20128/v1
+      # Cho phép sandbox gọi được Goose bằng local proxy trên Host máy tính của bạn
+    volumes:
+      # Map toàn bộ codebase vào container để edit và test
+      - ../../../:/app
+      # Bảo vệ node_modules bên trong Image không bị shadow bởi Host mount
+      - backend_node_modules:/app/backend/node_modules
+      - tools_node_modules:/app/tools/kaos/node_modules
+      # Map ~/.config/goose để container sandbox chia sẻ token và config của Goose CLI trên host
+      - ~/.config/goose:/root/.config/goose-host:ro
+      # Map vault tri thức dùng chung
+      - ../../../knowledge-base/vault:/app/vault
+    networks:
+      - stax_sandbox_net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  postgres_sandbox:
+    image: postgres:15-alpine
+    container_name: stax_postgres_sandbox
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: stax_sandbox
+    ports:
+      - "5433:5432" # Dùng port 5433 để tránh đụng độ với DB phát triển (5432)
+    volumes:
+      - pgdata_sandbox:/var/lib/postgresql/data
+    networks:
+      - stax_sandbox_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d stax_sandbox"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis_sandbox:
+    image: redis:7-alpine
+    container_name: stax_redis_sandbox
+    ports:
+      - "6380:6379" # Port 6380 tránh đụng độ
+    networks:
+      - stax_sandbox_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # Knowledge-Base Service — Đồ thị tri thức & API Hono
+  knowledge-base:
+    build:
+      context: ../../../knowledge-base
+      dockerfile: Dockerfile
+    container_name: stax_kb_sandbox
+    restart: unless-stopped
+    depends_on:
+      postgres_sandbox:
+        condition: service_healthy
+    env_file:
+      - ../../../backend/.env.development
+    environment:
+      - PORT=3000
+      - NODE_ENV=development
+      - VAULT_DIR=/app/vault
+    volumes:
+      # Map chung vault tri thức
+      - ../../../knowledge-base/vault:/app/vault
+    ports:
+      - "3000:3000"
+    networks:
+      - stax_sandbox_net
+
+networks:
+  stax_sandbox_net:
+    driver: bridge
+
+volumes:
+  pgdata_sandbox:
+  backend_node_modules:
+  tools_node_modules:

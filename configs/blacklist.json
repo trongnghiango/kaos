@@ -1,0 +1,15 @@
+{
+  "blacklisted_paths": [
+    "backend/src/modules/auth",
+    "backend/src/core/shared/application/guards",
+    "backend/src/core/shared/infrastructure/tenant-isolation",
+    "infra",
+    ".git"
+  ],
+  "protected_patterns": [
+    "organization_id",
+    "@BypassAuth()",
+    "@Public()"
+  ],
+  "reasoning": "Các thư mục và patterns này chứa core security logic của nền tảng STAX (đăng nhập, cách ly dữ liệu đa doanh nghiệp). Nghiêm cấm Agent tự ý sửa đổi để tối ưu hóa, phòng tránh lỗ hổng Tenant Leakage."
+}

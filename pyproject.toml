@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kaos-cli"
+version = "1.0.0"
+description = "KAOS: Knowledge-Augmented Organization System - Standalone AI Task Orchestrator"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+kaos = "kaos.interfaces.cli:main"
+
+[tool.setuptools]
+packages = ["kaos"]
+
+[tool.setuptools.package-dir]
+kaos = "."

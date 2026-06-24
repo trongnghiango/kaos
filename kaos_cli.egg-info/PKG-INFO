@@ -1,0 +1,16 @@
+Metadata-Version: 2.4
+Name: kaos-cli
+Version: 1.0.0
+Summary: KAOS: Knowledge-Augmented Organization System - Standalone AI Task Orchestrator
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+
+# KAOS — Standalone AI Task Orchestrator & Harness Tool
+
+**KAOS** (Knowledge-Augmented Organization System) là một công cụ tự động nghiên cứu (Auto-Research), kiểm định code (Gatekeeper) và thực thi sửa lỗi tự động (Auto-Healing) được xây dựng theo chuẩn **Clean Architecture (Ports & Adapters)**. 
+
+Công cụ này được thiết kế hoàn toàn độc lập (Standalone), cho phép trỏ và thực thi trên bất kỳ dự án TypeScript/NestJS đích nào (Target Codebase) thông qua tham số `--target-path`.
+
+---
+
+## 📂 Cấu trúc thư mục gói `kaos`

@@ -1,0 +1,13 @@
+README.md
+pyproject.toml
+./__init__.py
+./__main__.py
+./config.py
+./executor_facade.py
+./test_kaos.py
+./test_kaos_standalone.py
+kaos_cli.egg-info/PKG-INFO
+kaos_cli.egg-info/SOURCES.txt
+kaos_cli.egg-info/dependency_links.txt
+kaos_cli.egg-info/entry_points.txt
+kaos_cli.egg-info/top_level.txt

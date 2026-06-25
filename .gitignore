@@ -1,0 +1,35 @@
+# ── Python ──────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# ── Virtual Environment ────────────
+.venv/
+.venv_*/
+
+# ── KAOS Runtime ──────────────────
+.kaos/
+
+# ── Editor & IDE ──────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS ────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── AI Cache ──────────────────────
+.deepseek/
+
+# ── Dự án tái cấu trúc (src/) ─────
+# Thư mục src/ từ các lần thử nghiệm
+# tái cấu trúc không dùng ở branch này
+/src/
+
+# ── Claude ────────────────────────
+CLAUDE.md

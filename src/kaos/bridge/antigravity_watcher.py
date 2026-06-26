@@ -50,7 +50,7 @@ logger = logging.getLogger("AntigravityWatcher")
 
 # ─── Skill Loader ─────────────────────────────────────────────────────────────
 
-KAOS_ROOT = Path(__file__).resolve().parent.parent
+KAOS_ROOT = Path(__file__).resolve().parent.parent.parent.parent  # project root
 SKILLS_DIR = KAOS_ROOT / "skills"
 
 def load_skill(skill_name: str) -> str:

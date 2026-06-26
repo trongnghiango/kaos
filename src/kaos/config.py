@@ -19,7 +19,8 @@ TARGET_PATH_ENV = os.environ.get("KAOS_TARGET_PATH")
 TARGET_PATH = Path(TARGET_PATH_ENV).resolve() if TARGET_PATH_ENV else Path.cwd().resolve()
 
 # Gốc của kaos tool package
-KAOS_ROOT = Path(__file__).resolve().parent
+KAOS_ROOT = Path(__file__).resolve().parent          # src/kaos/
+PROJECT_ROOT = KAOS_ROOT.parent.parent               # thư mục gốc dự án kaos
 TS_BRIDGE = KAOS_ROOT / "bridge" / "executor.ts"
 
 # ==========================================

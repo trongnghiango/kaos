@@ -16,7 +16,7 @@ from kaos.domain.value_objects import ExecutionConfig, SessionMetadata, AgentIns
 from kaos.application.ports import GitPort, StoragePort, GatekeeperPort, LLMProviderPort
 
 # Lấy log chuẩn của STAX Harness
-from kaos.config import Prompts, TMP_DIR, KAOS_ROOT as AUTORESEARCH_ROOT, TARGET_PATH as REPO_ROOT
+from kaos.config import Prompts, TMP_DIR, PROJECT_ROOT, TARGET_PATH as REPO_ROOT
 
 logger = logging.getLogger("STAX_Harness")
 
@@ -246,7 +246,7 @@ class ClassifyErrorUseCase:
 
         skill_file = "cli-error-classifier.md"
         instruction = Prompts.ERROR_CLASSIFIER.format(
-            skill_file_path=str((AUTORESEARCH_ROOT / 'skills' / skill_file).resolve()),
+            skill_file_path=str((PROJECT_ROOT / 'skills' / skill_file).resolve()),
             ctx_file_path=ctx_file.resolve(),
             output_file_path=out_file.resolve(),
         )
@@ -600,7 +600,7 @@ class ExecuteWorkflowUseCase:
             # --- B. CODER AGENT ---
             coder_out_file = self.tmp_dir / f"goose_out_{task.task_id}.json"
             coder_instruction = Prompts.CODER.format(
-                skill_file_path=str((AUTORESEARCH_ROOT / 'skills' / skill_file).resolve()),
+                skill_file_path=str((PROJECT_ROOT / 'skills' / skill_file).resolve()),
                 ctx_file_path=task_ctx_file.resolve(),
                 tactical_plan=tactical_plan,
                 output_file_path=coder_out_file.resolve()

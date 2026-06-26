@@ -36,7 +36,7 @@ class TsGatekeeperAdapter(GatekeeperPort):
             )
             self.cmd_prefix = [self.node_path, tsx_cli]
         else:
-            kaos_tsx = config.KAOS_ROOT / "node_modules" / "tsx" / "dist" / "cli.mjs"
+            kaos_tsx = config.PROJECT_ROOT / "node_modules" / "tsx" / "dist" / "cli.mjs"
             tsx_relative = config.PATHS_CONF.get("tsx_cli_relative", "node_modules/tsx/dist/cli.mjs")
             # Hỗ trợ đường dẫn tuyệt đối
             tsx_path = Path(tsx_relative)

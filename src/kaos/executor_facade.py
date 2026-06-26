@@ -15,11 +15,11 @@ import sys
 import time
 from pathlib import Path
 
-from kaos.config import TARGET_PATH as REPO_ROOT, KAOS_ROOT, logger
+from kaos.config import TARGET_PATH as REPO_ROOT, KAOS_ROOT, PROJECT_ROOT, logger
 import kaos.config as config
 
 SANDBOX_CONTAINER = "stax_ai_sandbox"
-COMPOSE_FILE = KAOS_ROOT / "configs" / "docker-compose.sandbox.yml"
+COMPOSE_FILE = PROJECT_ROOT / "configs" / "docker-compose.sandbox.yml"
 
 
 def is_sandbox_enabled() -> bool:

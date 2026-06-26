@@ -13,8 +13,8 @@ dependencies = []
 [project.scripts]
 kaos = "kaos.interfaces.cli:main"
 
-[tool.setuptools]
-packages = ["kaos"]
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.setuptools.package-dir]
-kaos = "."
+"" = "src"

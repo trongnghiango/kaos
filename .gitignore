@@ -9,6 +9,9 @@ build/
 .venv/
 .venv_*/
 
+# ── Testing ────────────────────────
+.pytest_cache/
+
 # ── KAOS Runtime ──────────────────
 .kaos/
 
@@ -26,10 +29,8 @@ Thumbs.db
 # ── AI Cache ──────────────────────
 .deepseek/
 
-# ── Dự án tái cấu trúc (src/) ─────
-# Thư mục src/ từ các lần thử nghiệm
-# tái cấu trúc không dùng ở branch này
-/src/
+# ── Source layout ──────────────────
+# Mọi code nằm trong src/kaos/, không cần ignore src/
 
 # ── Claude ────────────────────────
 CLAUDE.md

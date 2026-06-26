@@ -94,18 +94,18 @@ class TestTaskBudget:
     def test_simple_budget(self):
         budget = TaskBudget.for_complexity("TASK_001", TaskComplexity.SIMPLE)
         assert budget.max_turns == 7
-        assert budget.timeout_secs == 120
+        assert budget.timeout_secs == 180
         assert budget.max_fix_attempts == 3
 
     def test_medium_budget(self):
         budget = TaskBudget.for_complexity("TASK_002", TaskComplexity.MEDIUM)
         assert budget.max_turns == 15
-        assert budget.timeout_secs == 240
+        assert budget.timeout_secs == 300
 
     def test_complex_budget(self):
         budget = TaskBudget.for_complexity("TASK_003", TaskComplexity.COMPLEX)
         assert budget.max_turns == 30
-        assert budget.timeout_secs == 480
+        assert budget.timeout_secs == 600
 
     def test_from_task_description_simple(self):
         budget = TaskBudget.from_task_description(

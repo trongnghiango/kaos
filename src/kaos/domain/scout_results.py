@@ -108,19 +108,19 @@ class TaskBudget:
                 task_id=task_id,
                 complexity=TaskComplexity.SIMPLE,
                 max_turns=7,
-                timeout_secs=120,
+                timeout_secs=180,
             ),
             TaskComplexity.MEDIUM: TaskBudget(
                 task_id=task_id,
                 complexity=TaskComplexity.MEDIUM,
                 max_turns=15,
-                timeout_secs=240,
+                timeout_secs=300,
             ),
             TaskComplexity.COMPLEX: TaskBudget(
                 task_id=task_id,
                 complexity=TaskComplexity.COMPLEX,
                 max_turns=30,
-                timeout_secs=480,
+                timeout_secs=600,
             ),
         }
         return budget_map[complexity]

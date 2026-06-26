@@ -236,13 +236,13 @@ async function handleAnalyze(task: TaskContext) {
 }
 
 async function handleExtractSchema(task: TaskContext) {
-  const schemaDir = path.resolve(REPO_ROOT, 'backend/src/database/schema');
-  const schemaData: Record<string, any> = {};
+  const EXCLUDED_DIRS = new Set(['node_modules', '.git', 'dist', 'coverage', '.next', '.nuxt', 'build', '.cache']);
 
-  if (!fs.existsSync(schemaDir)) {
-    outputResult({ success: false, stdout: '', stderr: '', error: 'Schema directory not found' });
-    return;
-  }
+  const allTables: string[] = [];
+  const allColumns: { name: string; type: string; is_key: boolean }[] = [];
+  const columnsByTable: Record<string, { name: string; type: string }[]> = {};
+  const allModules: string[] = [];
+  const schemaFileData: Record<string, any> = {};
 
   function extractSchemaFromSource(sourceText: string, filePath: string): Record<string, { tableName: string; columns: string[] }> {
     const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true);
@@ -281,32 +281,102 @@ async function handleExtractSchema(task: TaskContext) {
     return tables;
   }
 
-  const scanSchemaFiles = (dir: string) => {
-    const files = fs.readdirSync(dir);
-    for (const file of files) {
-      const fullPath = path.join(dir, file);
-      const stat = fs.statSync(fullPath);
+  function extractModuleName(filePath: string): string {
+    const basename = path.basename(filePath);  // e.g. "user.module.ts"
+    // Convert "user.module.ts" → "UserModule" (capitalize + strip extension)
+    const parts = basename.replace(/\.module\.ts$/, '').split(/[-_.]/);
+    return parts.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join('') + 'Module';
+  }
+
+  function walkDir(dir: string) {
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(dir);
+    } catch {
+      return; // permission denied or missing
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry);
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(fullPath);
+      } catch {
+        continue;
+      }
       if (stat.isDirectory()) {
-        scanSchemaFiles(fullPath);
-      } else if (file.endsWith('.schema.ts')) {
+        if (!EXCLUDED_DIRS.has(entry) && !entry.startsWith('.')) {
+          walkDir(fullPath);
+        }
+      } else if (entry.endsWith('.schema.ts')) {
         const content = fs.readFileSync(fullPath, 'utf-8');
         const relativePath = path.relative(REPO_ROOT, fullPath);
         const tables = extractSchemaFromSource(content, fullPath);
 
-        if (Object.keys(tables).length > 0) {
-          schemaData[relativePath] = tables;
+        for (const [varName, tableInfo] of Object.entries(tables)) {
+          const tName = tableInfo.tableName || varName;
+          allTables.push(tName);
+          columnsByTable[tName.toLowerCase()] = tableInfo.columns.map(c => ({
+            name: c,
+            type: 'string',
+          }));
+          for (const col of tableInfo.columns) {
+            allColumns.push({ name: col, type: 'string', is_key: false });
+          }
+          schemaFileData[relativePath] = {
+            [varName]: { tableName: tName, columns: tableInfo.columns },
+            ...(schemaFileData[relativePath] || {}),
+          };
+        }
+      } else if (entry.endsWith('.module.ts')) {
+        const relativePath = path.relative(REPO_ROOT, fullPath);
+        // Only collect top-level modules (skip deep node_modules if any slipped through)
+        if (!relativePath.includes('node_modules')) {
+          const modName = extractModuleName(entry);
+          if (!allModules.includes(modName)) {
+            allModules.push(modName);
+          }
         }
       }
     }
-  };
+  }
 
   try {
-    scanSchemaFiles(schemaDir);
+    walkDir(REPO_ROOT);
+
+    if (allTables.length === 0) {
+      // Fallback: no schema tables found but still return modules
+      outputResult({
+        success: true,
+        stdout: allModules.length > 0
+          ? `No Drizzle schema files found (${allModules.length} modules detected)`
+          : 'No schema files found in repository',
+        stderr: '',
+        metrics: {
+          tables: [],
+          columns: [],
+          modules: allModules,
+          columns_by_table: {},
+          raw: {},
+        }
+      });
+      return;
+    }
+
+    // Deduplicate table names
+    const uniqueTables = [...new Set(allTables)];
+    const uniqueModules = [...new Set(allModules)];
+
     outputResult({
       success: true,
-      stdout: 'Database schemas extracted successfully',
+      stdout: `Extracted ${uniqueTables.length} tables, ${uniqueModules.length} modules from ${Object.keys(schemaFileData).length} schema files`,
       stderr: '',
-      metrics: schemaData
+      metrics: {
+        tables: uniqueTables,
+        columns: allColumns,
+        modules: uniqueModules,
+        columns_by_table: columnsByTable,
+        raw: schemaFileData,
+      }
     });
   } catch (error: any) {
     outputResult({ success: false, stdout: '', stderr: '', error: error.message });

@@ -290,11 +290,14 @@ class TestActExecutor:
     ):
         """Compile fail → AutoFixer loop."""
         # First 2 attempts fail compile, 3rd succeeds
-        mock_gatekeeper.compile_check.side_effect = [
-            (False, "TSError: Type 'X' not found"),
-            (False, "TSError: Type 'X' not found"),
-            (False, "TSError: still broken"),
-        ] * 3  # enough for all attempts
+        mock_gatekeeper.compile_check.side_effect = (
+            [(True, "")]  # baseline capture
+            + [
+                (False, "TSError: Type 'X' not found"),
+                (False, "TSError: Type 'X' not found"),
+                (False, "TSError: still broken"),
+            ] * 3
+        )  # baseline + enough fails for attempts + escalate
 
         results = await executor.execute(empty_report)
         # AutoFixer thử 3 lần + escalate = tổng 5 attempts max
@@ -316,6 +319,7 @@ class TestActExecutor:
     ):
         """Compile fail lần 1 → fix lần 2 → success."""
         mock_gatekeeper.compile_check.side_effect = [
+            (True, ""),  # baseline capture
             (False, "TSError: first compile"),
             (True, ""),
         ]

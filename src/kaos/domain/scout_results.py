@@ -14,6 +14,8 @@ class ConflictType(str, Enum):
     """Loại xung đột giữa raw data / spec với codebase hiện tại"""
     SCHEMA_MISMATCH = "SCHEMA_MISMATCH"
     SPEC_MISMATCH = "SPEC_MISMATCH"
+    SPEC_ACTION = "SPEC_ACTION"    # Explicit action được liệt kê trong spec
+    SPEC_REQUIREMENT = "SPEC_REQUIREMENT"  # Yêu cầu cụ thể từ spec cần thực hiện
     TENANCY_ISSUE = "TENANCY_ISSUE"
     TYPE_MISMATCH = "TYPE_MISMATCH"
     MISSING_MODULE = "MISSING_MODULE"
@@ -65,6 +67,8 @@ class ScoutReport:
     scope_type: str = "MODIFY"  # NEW_FEATURE | MODIFY | OPTIMIZE
     is_new_module: bool = False
     reasoning: str = ""
+    # New field: explicit file actions parsed from the spec
+    file_actions: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def high_conflicts(self) -> List[ConflictPoint]:

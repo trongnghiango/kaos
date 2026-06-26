@@ -4,9 +4,11 @@ Detect Scope Use Case
 Tự động phân tích Spec để nhận diện loại tác vụ và module chịu ảnh hưởng.
 """
 
+import json
 import logging
+import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from kaos.domain.value_objects import AgentInstruction
 from kaos.application.ports import StoragePort, GatekeeperPort, LLMProviderPort
@@ -31,6 +33,43 @@ class DetectScopeUseCase:
         self.gatekeeper = gatekeeper
         self.config = config
         self.tmp_dir = tmp_dir or TMP_DIR
+
+    @staticmethod
+    def _try_extract_json(text: str) -> Optional[Dict[str, Any]]:
+        """Extract JSON from LLM stdout. Tries direct parse, fenced blocks, then bare { }."""
+        if not text:
+            return None
+
+        # Strategy 1: parse entire text as JSON
+        try:
+            return json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Strategy 2: find ```json...``` block
+        json_block = re.compile(r"```(?:json)?\s*\n?(.*?)```", re.DOTALL)
+        for match in json_block.finditer(text):
+            block = match.group(1).strip()
+            try:
+                return json.loads(block)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+        # Strategy 3: find outermost { }
+        brace = text.find("{")
+        if brace >= 0:
+            depth = 0
+            for i in range(brace, len(text)):
+                if text[i] == "{":
+                    depth += 1
+                elif text[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(text[brace : i + 1])
+                        except (json.JSONDecodeError, ValueError):
+                            break
+        return None
 
     async def execute(self, spec: Optional[str] = None, raw_data: Optional[str] = None) -> dict:
         logger.info("\n🔍 [KAOS Scope Detector] Đang tự động phân tích phạm vi & module phù hợp...")
@@ -91,7 +130,13 @@ class DetectScopeUseCase:
         exit_code, out_logs = await self.llm_provider.run_agent(AgentInstruction.from_raw(instruction, timeout=timeout_val))
 
         if exit_code != 0 or not self.storage.file_exists(out_file):
-            logger.warning("⚠️ LLM Scope Detector thất bại hoặc không sinh ra file kết quả. Sử dụng fallback module='all'.")
+            logger.warning("⚠️ LLM Scope Detector thất bại hoặc không sinh ra file kết quả.")
+            # Fallback: thử parse JSON từ logs
+            result = self._try_extract_json(out_logs)
+            if result:
+                logger.info("✅ [KAOS Scope Detector] Parsed scope from LLM stdout (fallback)")
+                return result
+            logger.warning("   → Sử dụng fallback module='all'.")
             return {
                 "scope_type": "MODIFY",
                 "recommended_module": "all",
@@ -107,6 +152,11 @@ class DetectScopeUseCase:
             return result
         except Exception as e:
             logger.error(f"❌ Lỗi đọc kết quả Scope Detector: {e}")
+            # Fallback: thử parse JSON từ logs
+            result = self._try_extract_json(out_logs)
+            if result:
+                logger.info("✅ [KAOS Scope Detector] Parsed scope from LLM stdout (fallback after JSON error)")
+                return result
             return {
                 "scope_type": "MODIFY",
                 "recommended_module": "all",

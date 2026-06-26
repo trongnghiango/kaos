@@ -47,6 +47,7 @@ class Synthesizer:
         conflicts.extend(Synthesizer._detect_schema_mismatches(schema_summary, raw_data_summary))
         conflicts.extend(Synthesizer._detect_tenancy_issues(schema_summary, spec_summary))
         conflicts.extend(Synthesizer._detect_module_mismatches(schema_summary, spec_summary))
+        conflicts.extend(Synthesizer._detect_spec_requirements(spec_summary))
 
         # 2. Tính điểm tương thích
         compatibility_score = Synthesizer._calculate_compatibility(conflicts)
@@ -65,6 +66,7 @@ class Synthesizer:
             scope_type=spec_summary.get("scope_type", "MODIFY"),
             is_new_module=is_new,
             reasoning=Synthesizer._build_reasoning(conflicts, compatibility_score, module),
+            file_actions=Synthesizer._extract_file_actions(spec_summary),
         )
 
     # ── Conflict Detection ────────────────────────────────────
@@ -190,6 +192,64 @@ class Synthesizer:
 
         return conflicts
 
+    @staticmethod
+    def _detect_spec_requirements(spec: Dict[str, Any]) -> List[ConflictPoint]:
+        """
+        Chuyển đổi yêu cầu từ spec thành SPEC_ACTION ConflictPoint.
+        Mỗi affected_file và mỗi requirement -> 1 conflict riêng (để ActExecutor tạo task chi tiết).
+        """
+        conflicts: List[ConflictPoint] = []
+        requirements = spec.get("requirements", [])
+        affected_files = spec.get("affected_files", [])
+
+        # affected_files -> 1 conflict mỗi file
+        for file_path in affected_files[:15]:
+            conflicts.append(ConflictPoint(
+                conflict_type=ConflictType.SPEC_ACTION,
+                severity=ConflictSeverity.HIGH,
+                description=f"Sửa file: {file_path}",
+                suggestion=f"Thực hiện thay đổi trong file {file_path} theo spec",
+                location=file_path,
+                source="spec"
+            ))
+
+        # requirements -> 1 conflict mỗi requirement
+        for i, req in enumerate(requirements[:15]):
+            severity = ConflictSeverity.MEDIUM
+            req_lower = req.lower()
+            if any(w in req_lower for w in ['xoá', 'xóa', 'remove', 'delete', 'thêm', 'add', 'create', 'tạo', 'fix']):
+                severity = ConflictSeverity.HIGH
+
+            conflicts.append(ConflictPoint(
+                conflict_type=ConflictType.SPEC_ACTION,
+                severity=severity,
+                description=req[:120],
+                suggestion=f"Thực hiện: {req[:200]}",
+                location=f"spec_req_{i+1}",
+                source="spec"
+            ))
+
+        return conflicts
+
+    @staticmethod
+    def _extract_file_actions(spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Trích xuất file_actions từ spec_summary để ScoutReport có danh sách cụ thể."""
+        file_actions = []
+        affected_files = spec.get("affected_files", [])
+        requirements = spec.get("requirements", [])
+
+        for f in affected_files[:20]:
+            file_actions.append({"file": f, "action": "modify", "description": f"Sửa file {f}"})
+        for i, req in enumerate(requirements[:20]):
+            file_actions.append({"file": spec.get("target_module", f"spec_req_{i+1}"), "action": "implement", "description": req[:200]})
+
+        if not file_actions:
+            desc = spec.get("description", "")
+            if desc and len(desc) > 10:
+                file_actions.append({"file": spec.get("target_module", "module"), "action": "modify", "description": desc[:200]})
+
+        return file_actions
+
     # ── Scoring ──────────────────────────────────────────────
 
     @staticmethod
@@ -245,6 +305,7 @@ class Synthesizer:
         keywords = ["multi-tenancy", "organization_id", "tenant", "org_id", "multi tenant", "cô lập"]
         return any(k in text for k in keywords)
 
+    
     @staticmethod
     def _build_reasoning(
         conflicts: List[ConflictPoint],

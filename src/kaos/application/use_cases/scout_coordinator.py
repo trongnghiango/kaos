@@ -20,8 +20,9 @@ from kaos.infrastructure.adapters.synthesizer import Synthesizer
 
 logger = logging.getLogger("KAOS_Harness")
 
-SCOUT_TURNS = 7          # mỗi scout chỉ 7 turns
-SCOUT_TIMEOUT = 120      # 2 phút timeout cho scout
+SCOUT_TURNS = 7          # mỗi scout chỉ 7 turns, timeout riêng cho từng loại
+SCOUT_TIMEOUT = 120      # 2 phút timeout mặc định cho scout
+SCOUT_TIMEOUT_SPEC = 300 # 5 phút cho SpecScout (spec thường dài, cần thời gian đọc)
 
 
 class ScoutCoordinator:
@@ -202,7 +203,12 @@ class ScoutCoordinator:
     # ── Spec Scout ────────────────────────────────────────
 
     async def _spec_scout(self, spec: str) -> Dict[str, Any]:
-        """Dùng LLM (7 turns) để parse spec nhanh."""
+        """Parse spec content. Prefer JSON block if present, otherwise fallback to LLM.
+
+        The spec may contain a fenced JSON block at the end (```json ... ```). If found, we
+        directly parse it and return the dict, avoiding the LLM call. This improves reliability
+        for specs that already provide machine‑readable data.
+        """
         out_file = self.tmp_dir / "scout_spec_result.json"
 
         spec_content = spec
@@ -213,27 +219,53 @@ class ScoutCoordinator:
             except Exception:
                 pass  # dùng raw string
 
+        # ── PRIORITY 1: try to parse machine-readable JSON block ──
+        JSON_BLOCK_PATTERN = re.compile(r"```json\n(.*?)```", re.DOTALL)
+        json_match = JSON_BLOCK_PATTERN.search(spec_content)
+        if json_match:
+            try:
+                result = json.loads(json_match.group(1))
+                logger.info("   ✅ [SpecScout] Parsed spec from embedded JSON block (fast path)")
+                return result
+            except json.JSONDecodeError as e:
+                logger.warning(f"   ⚠️ [SpecScout] Found JSON block but parse failed: {e}")
+
         # Hard-truncate để tránh spec quá dài
         spec_content = spec_content[:8000]
 
         instruction = (
-            f"Phân tích NHANH spec sau (chỉ dùng tối đa 5-7 turns). "
-            f"Xác định scope, module mục tiêu, và các requirements chính.\n\n"
+            f"Phân tích CHI TIẾT spec sau (chỉ dùng tối đa 7 turns). "
+            f"Xác định scope, module mục tiêu, và LIỆT KÊ từng công việc cụ thể.\n\n"
             f"=== SPEC ===\n{spec_content}\n\n"
             f"Trả về JSON vào file: {out_file}\n"
             f"Format:\n"
             f"{{\n"
-            f'  "scope_type": "NEW_FEATURE" | "MODIFY" | "OPTIMIZE",\n'
-            f'  "target_module": "tên_module",\n'
+            f'  "scope_type": "NEW_FEATURE" | "MODIFY" | "OPTIMIZE" | "REFACTOR" | "CLEANUP",\n'
+            f'  "target_module": "tên_module hoặc all",\n'
             f'  "description": "Tóm tắt ngắn spec",\n'
-            f'  "requirements": ["req1", "req2", ...],\n'
+            f'  "requirements": [\n'
+            f'    "req1: mô tả chi tiết từng việc phải làm",\n'
+            f'    "req2: ...",\n'
+            f'  ],\n'
+            f'  "affected_files": [\n'
+            f'    "relative/path/to/file1.ts",\n'
+            f'    "relative/path/to/file2.ts",\n'
+            f'  ],\n'
             f'  "requires_tenancy": true | false,\n'
             f'  "complexity": "SIMPLE|MEDIUM|COMPLEX"\n'
             f"}}\n"
+            f"\n"
+            f"⚠️ QUAN TRỌNG: requirements phải LIỆT KÊ CHI TIẾT từng hành động cụ thể\n"
+            f"(ví dụ: 'Xoá drizzle-orm khỏi backend/package.json', "
+            f"'Sửa drizzle-cash-fund.repository.ts thành inject repository', "
+            f"'Xoá drizzle-audit-log.service.ts'), \n"
+            f"không viết chung chung như 'Dọn dẹp drizzle'. "
+            f"Mỗi requirement = 1 action cụ thể trên 1 file hoặc 1 nhóm file nhỏ.\n"
+            f"affected_files = danh sách tất cả file cần sửa (đường dẫn tương đối).\n"
         )
 
         exit_code, logs = await self.llm_provider.run_agent(
-            AgentInstruction.from_raw(instruction, timeout=float(SCOUT_TIMEOUT))
+            AgentInstruction.from_raw(instruction, timeout=float(SCOUT_TIMEOUT_SPEC))
         )
 
         # Ưu tiên file output
@@ -248,13 +280,31 @@ class ScoutCoordinator:
                 logger.info("   ✅ [SpecScout] Parsed spec from LLM stdout")
                 return result
 
-        # Fallback cuối
-        logger.warning("   ⚠️ [SpecScout] LLM không trả về JSON hợp lệ — dùng fallback")
+        # Fallback cuối: extrair requisitos do texto bruto
+        logger.warning("   ⚠️ [SpecScout] LLM không trả về JSON hợp lệ — extraindo requisitos do texto")
+
+        # Heuristic: поиск строк, похожих на задачи/требования
+        requirements = []
+        lines = spec_content.split('\n')
+        for line in lines:
+            line = line.strip()
+            # Ищем строки, начинающиеся с маркеров списка или содержащие ключевые слова действий
+            if (line.startswith('- ') or line.startswith('* ') or
+                line.startswith('• ') or line.startswith('1. ') or
+                any(keyword in line.lower() for keyword in
+                   ['xoá', 'sửa', 'thêm', 'tạo', 'xóa', 'fix', 'remove', 'add', 'create', 'update', 'delete'])):
+                if len(line) > 10:  # Фильтруем слишком короткие строки
+                    requirements.append(line.lstrip('-•*1234567890. '))
+
+        # Если ничего не найдено, создаем общую задачу на основе описания
+        if not requirements and spec_content:
+            requirements = [f"Thực hiện các công việc được mô tả trong spec: {spec_content[:100]}..."]
+
         return {
             "scope_type": "MODIFY",
             "target_module": "",
             "description": spec_content[:200],
-            "requirements": [],
+            "requirements": requirements[:10],  # Ограничиваем количество
             "requires_tenancy": False,
             "complexity": "MEDIUM",
         }

@@ -19,11 +19,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from kaos.domain.scout_results import (
+    ConflictType,
     ScoutReport,
     TaskBudget,
     TaskComplexity,
 )
-from kaos.domain.value_objects import AgentInstruction, ExecutionConfig
+from kaos.domain.value_objects import (
+    AgentInstruction,
+    ExecutionConfig,
+)
 from kaos.application.ports import CachePort, GatekeeperPort, LLMProviderPort, StoragePort
 from kaos.application.use_cases.classify_error import ClassifyErrorUseCase
 from kaos.config import PROJECT_ROOT
@@ -189,8 +193,9 @@ class ActExecutor:
         Sinh ActTask list từ ScoutReport.
 
         Strategy:
-        - HIGH conflicts → FIX tasks
+        - HIGH conflicts → FIX tasks (bao gồm SPEC_ACTION conflicts)
         - MEDIUM conflicts → FIX tasks
+        - SPEC_ACTION/SPEC_REQUIREMENT → 1 task mỗi requirement
         - is_new_module → INIT task
         - Spec requirements → FEAT tasks
         - Fallback: 1 task từ scope
@@ -204,8 +209,28 @@ class ActExecutor:
 
         module = report.module or "all"
 
+        # ── Prioritize SPEC_ACTION conflicts first ──────────────
+        # These are explicit actions parsed from the spec
+        spec_action_conflicts = [
+            c for c in report.conflict_points
+            if c.conflict_type in (ConflictType.SPEC_ACTION, ConflictType.SPEC_REQUIREMENT)
+        ]
+        for conflict in spec_action_conflicts:
+            task_id = next_id("FIX" if conflict.severity.value in ("HIGH", "MEDIUM") else "FEAT")
+            tasks.append(ActTask.from_spec_and_schema(
+                task_id=task_id,
+                title=conflict.description[:80],
+                description=conflict.description,
+                module=module,
+                complexity_hint=conflict.description,
+            ))
+
         # 1. HIGH conflicts → schema/tenancy fixes
-        for conflict in report.high_conflicts:
+        high_schema_conflicts = [
+            c for c in report.high_conflicts
+            if c.conflict_type not in (ConflictType.SPEC_ACTION, ConflictType.SPEC_REQUIREMENT)
+        ]
+        for conflict in high_schema_conflicts:
             task_id = next_id("FIX")
             tasks.append(ActTask.from_spec_and_schema(
                 task_id=task_id,
@@ -215,8 +240,12 @@ class ActExecutor:
                 complexity_hint=conflict.description,
             ))
 
-        # 2. MEDIUM conflicts
-        for conflict in report.medium_conflicts:
+        # 2. MEDIUM conflicts (non-spec-action)
+        med_schema_conflicts = [
+            c for c in report.medium_conflicts
+            if c.conflict_type not in (ConflictType.SPEC_ACTION, ConflictType.SPEC_REQUIREMENT)
+        ]
+        for conflict in med_schema_conflicts:
             task_id = next_id("FIX")
             tasks.append(ActTask.from_spec_and_schema(
                 task_id=task_id,
@@ -241,7 +270,7 @@ class ActExecutor:
                 complexity_hint="COMPLEX",
             ))
 
-        # 4. Spec requirements → feature tasks
+        # 4. Spec requirements (non-conflict) → feature tasks
         requirements = report.spec_summary.get("requirements", [])
         for req in requirements:
             task_id = next_id("FEAT")

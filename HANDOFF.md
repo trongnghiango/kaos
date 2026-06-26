@@ -1,9 +1,9 @@
 # BÀN GIAO DỰ ÁN KAOS
 
-> Thời gian: 2026-06-26 (phiên cuối — bàn giao lần 4)
-> Branch hiện tại: `main` — commit `2363b39`
-> Các thay đổi chưa commit: executor.ts, value_objects.py, llm_adapter.py, act_executor.py, scout_results.py, test files
-> Mục đích: Bàn giao cho session Claude Code mới sau khi hoàn thiện Scout→Act pipeline.
+> Thời gian: 2026-06-26 — 19:30 (phiên tối — bàn giao lần 5)
+> Branch hiện tại: `main` — commit `2363b39` (chưa commit fix mới)
+> Có 4 files chưa commit: `act_executor.py`, `scout_coordinator.py`, `scout_results.py`, `synthesizer.py`
+> Mục đích: Bàn giao sau khi cải thiện task generation từ spec chi tiết.
 
 ---
 
@@ -11,189 +11,159 @@
 
 ### 🟢 Tổng quan
 
-- **Project**: KAOS (Knowledge-Augmented Organization System) — Clean Architecture (Ports & Adapters)
+- **Project**: KAOS — Clean Architecture (Ports & Adapters)
 - **Entry point**: `src/kaos/interfaces/cli.py` → `main()` hoặc `--auto`
-- **104 tests, 0 failed** ✅ (sau 5 fixes)
-- **Pipeline thực tế trên STAX_ASP**: 10/10 tasks passed trong ~5 phút, không timeout, không retry
+- **104 tests, 0 failed** ✅ (sau tất cả fixes)
+- **STAX_ASP Pipeline**: spec `refactor-extract-packages` → 10/10 tasks pass
+- **Spec mới:** `cleanup-db-drizzle.spec.md` — mô tả dọn Drizzle khỏi backend STAX_ASP
 
-### 🔧 Fixes đã thực hiện (tổng cộng 5 fixes)
+### 🔧 Fixes phiên này (phiên #5 — 4 files)
 
 | # | Issue | Files | Mô tả |
 |---|-------|-------|-------|
-| 1 | Spec Scout parse stdout | `scout_coordinator.py`, `llm_adapter.py` | Parse JSON từ stdout LLM bằng regex 3-strategy |
-| 2 | Baseline compile errors | `act_executor.py` | `_capture_baseline_errors()` + `_is_new_error()` filter pre-existing errors |
-| 3 | Goose `--max-turns` timeout | `value_objects.py`, `llm_adapter.py`, `act_executor.py` | `max_turns` field trong AgentInstruction, dùng `instruction.max_turns or 50` |
-| 4 | Tăng timeout constants | `scout_results.py` | SIMPLE 120→180s, MEDIUM 240→300s, COMPLEX 480→600s |
-| 5 | Schema extraction rỗng | `executor.ts` | Scan toàn bộ repo tìm `*.schema.ts` + `*.module.ts`, trả về flat arrays |
+| 6 | SpecScout không extract được detail tasks | `scout_coordinator.py` | Prompt yêu cầu `requirements` + `affected_files`, fallback heuristic trích line từ markdown, SCOUT_TIMEOUT_SPEC=300s |
+| 7 | Synthesizer không chuyển spec actions thành conflicts | `synthesizer.py` | `_detect_spec_requirements()` → SPEC_ACTION conflicts, `_extract_file_actions()` → file_actions list, cập nhật merge() |
+| 8 | ActExecutor chỉ sinh 1 task generic | `act_executor.py` | `_generate_tasks()` ưu tiên SPEC_ACTION conflicts, mỗi conflict = 1 task riêng |
+| 9 | ScoutReport thiếu file_actions field | `scout_results.py` | Thêm `file_actions: List[Dict]`, +SPEC_ACTION + SPEC_REQUIREMENT ConflictType |
+| 10 | _data_scout bị duplicate code (sửa lỗi edit) | `scout_coordinator.py` | Fix dead code từ edit lỗi |
 
----
-
-### 🆕 Kiến trúc Scout → Act + Feedback Loop ✅ HOÀN THÀNH
-
-| Phase | Status | Files |
-|-------|--------|-------|
-| **Domain models + Cache** | ✅ | `domain/scout_results.py`, `infrastructure/adapters/cache_adapter.py`, `application/ports.py` |
-| **Synthesizer + ScoutCoordinator** | ✅ | `application/use_cases/scout_coordinator.py`, `infrastructure/adapters/synthesizer.py` |
-| **ActExecutor + AutoFixer** | ✅ | `application/use_cases/act_executor.py` |
-| **CLI --auto mode + DI wiring** | ✅ | `cli.py` (`--auto`, `--force-reparse`, `--force-act`), `di.py` |
-| **Git auto branch + commit** | ✅ | `application/use_cases/git_auto_manager.py`, `git_adapter.py` |
-| **Bottleneck tuning (timeout + schema)** | ✅ | `value_objects.py`, `llm_adapter.py`, `executor.ts` |
-
-### Cấu trúc thư mục hiện tại
+### Kiến trúc hiện tại
 
 ```
-kaos/
-├── src/kaos/
-│   ├── domain/
-│   │   ├── models.py, value_objects.py
-│   │   └── scout_results.py            # ScoutReport, ConflictPoint, TaskBudget
-│   ├── application/
-│   │   ├── ports.py                    # CachePort, GitPort (push, get_current_branch)
-│   │   └── use_cases/
-│   │       ├── scout_coordinator.py    # Scout Phase orchestration (FIXED: stdout parsing)
-│   │       ├── act_executor.py         # Act Phase + AutoFixer (FIXED: baseline errors, max_turns)
-│   │       └── git_auto_manager.py     # Git auto branch + commit (Mode B)
-│   ├── interfaces/
-│   │   └── cli.py                      # --auto, --force-reparse, --force-act
-│   ├── infrastructure/
-│   │   ├── di.py                       # Resolvers cho scout, act, git
-│   │   └── adapters/
-│   │       ├── cache_adapter.py        # FileCacheAdapter
-│   │       ├── llm_adapter.py          # GooseCliAdapter (FIXED: capture_output, max_turns dynamic)
-│   │       ├── synthesizer.py          # Synthesizer, ScoutAnalyzer
-│   │       └── git_adapter.py          # push(), get_current_branch()
-│   └── bridge/
-│       └── executor.ts                 # TypeScript Bridge (FIXED: schema scan whole repo)
-├── tests/ (104 tests)
-│   ├── domain/test_scout_results.py         # 15 tests
-│   ├── infrastructure/test_cache_adapter.py # 10 tests
-│   ├── infrastructure/test_synthesizer.py   # 19 tests
-│   ├── use_cases/test_scout_coordinator.py  # 9 tests
-│   ├── use_cases/test_act_executor.py       # 22 tests
-│   └── use_cases/test_git_auto_manager.py   # 11 tests
-├── HANDOFF.md
-├── docs/design/02_scout_act_architecture.md
-└── .claude/projects/.../memory/             # Persisted memory
+scout_coordinator.py
+  └─ _detect_scope() -> Goose parse spec → lấy module
+  └─ _spec_scout()   -> Goose parse spec → lấy requirements + affected_files + scope
+                        ↓ timeout/error fallback → heuristic extract lines from markdown
+synthesizer.py
+  └─ merge()
+       ├─ conflict_points = ... + _detect_spec_requirements(spec_summary)
+       │    ├─ affected_files[]   → ConflictType.SPEC_ACTION, HIGH
+       │    └─ requirements[]     → ConflictType.SPEC_ACTION, MEDIUM/HIGH
+       └─ file_actions = _extract_file_actions(spec_summary)
+act_executor.py
+  └─ _generate_tasks()
+       ├─ SPEC_ACTION conflicts  → 1 FIX/FEAT task mỗi conflict
+       ├─ HIGH conflicts         → FIX tasks (non-spec)
+       ├─ MEDIUM conflicts       → FIX tasks (non-spec)
+       ├─ is_new_module          → INIT task
+       ├─ spec requirements      → FEAT tasks
+       └─ fallback               → 1 task generic (khi không có conflict/requirement)
 ```
 
 ---
 
-## 📊 KẾT QUẢ THỰC NGHIỆM: 2 pipelines trên STAX_ASP
+## 📊 THỰC NGHIỆM: Pipeline cleanup-db-drizzle trên STAX_ASP
 
-### Pipeline #1 (11:23 — code cũ, chưa fix Goose timeout)
-
+### Lần 1 (19:03) — Code cũ, chưa fix SPEC_ACTION
 ```
-Thời gian: ~17 phút (chết lúc 11:40 do timeout liên tục)
-Tasks:     3/12 pass, 9 tasks bị timeout/compile error
-Bottleneck: 67% lần gọi Goose bị timeout (--max-turns 50 cứng)
+Tasks:     1 task generic → tạo 9 files migration scripts không liên quan
+Spec parse: ❌ không extract được requirements
 ```
 
-### Pipeline #2 (11:56 — code mới, đã fix mọi thứ)
-
+### Lần 2 (19:15) — Đã fix SPEC_ACTION nhưng SpecScout timeout
 ```
-Thời gian: ~5 phút
-Tasks:     10/10 pass NGAY LẦN ĐẦU
-Retry:     0 (không cần AutoFixer)
-Timeout:   0 (--max-turns dynamic: 7-15-30)
-Push:      ✅ origin/kaos/auto-all-20260626_115706-spec--tách-packages-
+Tasks:     2 tasks generic (FIX + FEAT, cùng mô tả spec path)
+Spec parse: ❌ Goose timeout 88s → fallback heuristic chỉ lấy 1 requirement
+Kết quả:   vẫn tạo file không liên quan
+```
+
+### Lần 3 (19:24) — SCOUT_TIMEOUT_SPEC=300, vẫn fail
+```
+Spec parse: ⚠️ vẫn fallback (không timeout, nhưng Goose trả về ko có JSON)
 ```
 
 ---
 
-## 🔴 VẤN ĐỀ ĐÃ PHÁT HIỆN VÀ ĐÃ FIX
+## 🔴 VẤN ĐỀ HIỆN TẠI
 
-### Vấn đề 1: Spec Scout không parse được spec ✅ ĐÃ FIX
-**Fix:** `scout_coordinator.py` — thêm `_try_extract_json()` dùng regex 3-strategy
+### 🚨 Vấn đề 6: SpecScout LLM không parse được spec thành detail tasks
+**Triệu chứng:** Dù đã cải thiện prompt, Goose vẫn không trả về JSON hợp lệ.
 
-### Vấn đề 2: Schema extraction không tìm thấy modules ✅ ĐÃ FIX (phiên này)
-**Triệu chứng:** Gatekeeper.extract_schema() trả về rỗng → Scout không thấy conflicts
-**Nguyên nhân:** executor.ts chỉ scan `backend/src/database/schema/`, không scan packages/ + không collect modules
-**Fix:** `executor.ts` — walk toàn bộ repo tìm `*.schema.ts` + `*.module.ts`, trả về `tables[]`, `columns[]`, `modules[]`
+**Nguyên nhân gốc:**
+1. SpecScout chỉ có 7 turns + 300s timeout, nhưng Goose (Anthropic) mất ~60-90s cho mỗi turn LLM call
+2. Prompt quá dài (spec ~5KB) → Goose dễ confusion
+3. **Quan trọng:** Scope Detector chạy *trước* SpecScout, cũng parse spec → lãng phí
 
-### Vấn đề 3: Pre-existing compile error làm fail pipeline ✅ ĐÃ FIX
-**Fix:** `act_executor.py` — `_capture_baseline_errors()` filter pre-existing errors
-**Bổ sung (phiên này):** Đã tạo stub files trong STAX_ASP để compile sạch 0 lỗi
+**Fix đề xuất (chưa implement):**
+```
+Cách A (nhanh, recommended):
+  - Thêm JSON block machine-readable vào cuối spec
+  - _spec_scout parse JSON block này trực tiếp (dùng json.loads)
+  - Chỉ dùng LLM làm fallback nếu không có JSON block
 
-### Vấn đề 4: Goose LLM timeout ✅ ĐÃ FIX (phiên này)
-**Fix:** Thêm `max_turns` vào AgentInstruction + tăng timeout constants
+Cách B (triệt để):
+  - Merge Scope Detector + SpecScout → 1 lần gọi LLM duy nhất
+  - Loại bỏ redundant parsing
+```
 
 ---
 
 ## 📋 CÔNG VIỆC TIẾP THEO
 
-### 🟢 Priority 1: Commit các thay đổi trong KAOS repo
-Các file chưa commit: executor.ts, value_objects.py, llm_adapter.py, act_executor.py, scout_results.py, test files
+### 🔴 Priority 1: Implement cách A — Spec máy đọc được
+Thêm json block vào cuối spec, KAOS parse trực tiếp (không LLM).
+
+```python
+# Trong _spec_scout() — parse JSON block trước, sau đó mới gọi LLM
+JSON_BLOCK_PATTERN = re.compile(r"```json\n(.*?)```", re.DOTALL)
+match = JSON_BLOCK_PATTERN.search(spec_content)
+if match:
+    return json.loads(match.group(1))
+```
+
+### 🟢 Priority 2: Commit các thay đổi trong KAOS repo
 ```bash
 cd /home/ka/Repos/github.com/trongnghiango/kaos
 git add -A
-git commit -m "fix: Goose max_turns dynamic + schema scan whole repo + timeout constants"
+git commit -m "feat: SPEC_ACTION task generation + SpecScout fallback + file_actions"
 ```
 
-### 🟢 Priority 2: Build và chạy lại KAOS --auto trên 1 project sạch (không STAX_ASP)
-Kiểm tra pipeline từ đầu đến cuối trên 1 NestJS project mới không có pre-existing changes.
+### 🟡 Priority 3: Scope Detector cũng bị JSON parse error
+**File:** `detect_scope.py` — dùng approach tương tự `_try_extract_json()` từ scout_coordinator.
 
-### 🟡 Priority 3: Scope Detector JSON parse error
-Lỗi: `❌ Lỗi đọc kết quả Scope Detector: Expecting property name enclosed in double quotes`
-Hiện fallback về `module=all`. Cần fix `detect_scope.py` để parse JSON đúng cách hoặc dùng same approach `_try_extract_json`.
+### 🟡 Priority 4: Thay Goose bằng Claude Code Provider
+Goose qua CLI có latency cao + timeout khó kiểm soát. Nên viết adapter mới dùng Anthropic SDK trực tiếp.
 
-### 🟡 Priority 4: Update spec để tránh task trùng lặp
-packages/contracts + db-schema đã hoàn chỉnh → update spec hoặc thêm flag `--skip-existing`.
-
-### 🟡 Priority 5: E2E Integration Tests
-Test full Scout→Act pipeline với mocks trên 1 spec cụ thể.
+### 🟢 Priority 5: Xoá schema cache cũ
+```bash
+rm -rf /home/ka/Repos/github.com/trongnghiango/STAX_ASP/.kaos/
+```
+Để test pipeline từ đầu với schema fresh.
 
 ---
 
 ## 🔧 STAX_ASP Context
 
 **Target:** `/home/ka/Repos/github.com/trongnghiango/STAX_ASP`
-**Spec:** `refactor-extract-packages.spec.md`
 **API Key:** `CUSTOM_KA_API_KEY="sk-ae76897770e59618-yz0pg1-37033d5c"`
+**Trạng thái:** Backend còn Drizzle trong ~30 files, packages đã hoàn chỉnh
 
-### Trạng thái hiện tại
+### Spec cleanup-db-drizzle.spec.md
+Vị trí: `/home/ka/Repos/github.com/trongnghiango/STAX_ASP/`
+Mô tả: Dọn Drizzle khỏi backend. Viết tiếng Việt, dạng markdown.
+Hiện chưa có JSON block — cần session mới thêm vào.
 
-| Package | Trạng thái |
-|---------|-----------|
-| 📦 `packages/contracts/` | ✅ Hoàn chỉnh |
-| 📦 `packages/db-schema/` | ✅ Hoàn chỉnh |
-| 🧪 Backend typecheck | ✅ **0 errors** (đã tạo stub files để fix 6 lỗi pre-existing) |
-| 🔄 Pipeline auto | ✅ **Đã chạy xong** (10/10 tasks pass, branch pushed) |
-| ⚙️ Compile clean | ✅ `tsc --noEmit` pass 0 errors |
-
-### Files đã tạo trong STAX_ASP (phiên này)
-- `backend/src/modules/test/application/services/crm-legacy-migration.service.ts`
-- `backend/src/modules/test/application/services/stax-legacy-migration.service.ts`
-- `backend/src/modules/test/application/scripts/verify-audit-log.ts`
-- `backend/src/modules/test/test.module.ts` (updated)
-
-### Branches đã push
-- `kaos/auto-all-20260626_102809-spec--tách-packages-`
-- `kaos/auto-all-20260626_104327-spec--tách-packages-`
-- `kaos/auto-all-20260626_105858-spec--tách-packages-`
-- `kaos/auto-system-20260626_112408-spec--tách-packages-`
-- `kaos/auto-all-20260626_115706-spec--tách-packages-` ← **mới nhất**
+### Branches pushed
+- `kaos/auto-all-20260626_190355-spec--remove-drizzle`
+- `kaos/auto-db-schema-20260626_191705-home-ka-repos-github`
+- `kaos/auto-system-20260626_192545-home-ka-repos-github`
 
 ---
 
 ## Ghi chú kỹ thuật
 
-- **LLM Provider:** `goose` với `CUSTOM_KA_API_KEY`
-- **Goose `--max-turns`:** dynamic theo budget (7/15/30) — fallback 50 nếu không có
-- **Timeout:** SIMPLE 180s, MEDIUM 300s, COMPLEX 600s
-- **Schema cache:** Cache HIT → test nhanh. Dùng `--force-reparse` để bypass.
-- **Baseline errors filter:** `_is_new_error()` so sánh normalized error lines với baseline
-- **executor.ts schema scan:** walk toàn bộ repo, exclude node_modules/.git/dist/coverage
-- **Xem `docs/design/02_scout_act_architecture.md`** cho design document
+- **LLM Provider:** Goose CLI với `CUSTOM_KA_API_KEY`
+- **Goose --max-turns:** dynamic 7/15/30 theo TaskBudget, scope detector = 50, coder = 7
+- **Timeout:** SIMPLE 180s, MEDIUM 300s, COMPLEX 600s, scout 120s, spec-scout 300s
+- **SPEC_ACTION conflicts:** được ưu tiên cao nhất trong task generation
+- **Baseline errors:** capture pre-existing, filter bằng normalized line comparison
+- **Schema cache:** Cache HIT → nhanh. `--force-reparse` để bypass.
+- **executor.ts:** scan toàn repo tìm `*.schema.ts` + `*.module.ts`
+- **Test:** `source .venv/bin/activate && pytest tests/ -v` (104 tests)
 
-### Chạy tests
-```bash
-source .venv/bin/activate
-pytest tests/ -v                     # 104 tests
-```
-
-### Chạy pipeline lại
+### Run pipeline test
 ```bash
 CUSTOM_KA_API_KEY="sk-ae76897770e59618-yz0pg1-37033d5c" source .venv/bin/activate
-pytest tests/ -v  # verify tests first
-kaos --auto --spec /path/to/spec.md --target-path /path/to/project
+pytest tests/ -q
+kaos --auto --spec /path/to/STAX_ASP/cleanup-db-drizzle.spec.md --target-path /path/to/STAX_ASP
 ```

@@ -138,3 +138,37 @@ class LLMProviderPort(ABC):
         Ví dụ: "goose", "antigravity", "claude-api"
         """
         pass
+
+
+class CachePort(ABC):
+    """Port cho caching layer — lưu trữ kết quả phân tích để tái sử dụng."""
+
+    @abstractmethod
+    def get(self, key: str) -> Optional[dict]:
+        """Đọc cache entry. Trả về None nếu miss."""
+        pass
+
+    @abstractmethod
+    def set(self, key: str, data: dict) -> None:
+        """Ghi cache entry."""
+        pass
+
+    @abstractmethod
+    def exists(self, key: str) -> bool:
+        """Kiểm tra cache entry có tồn tại không."""
+        pass
+
+    @abstractmethod
+    def invalidate(self, key: str) -> None:
+        """Xoá một cache entry cụ thể."""
+        pass
+
+    @abstractmethod
+    def clear_all(self) -> None:
+        """Xoá toàn bộ cache."""
+        pass
+
+    @abstractmethod
+    def hash_codebase(self, target_path: str) -> str:
+        """Tạo hash từ codebase để phát hiện thay đổi. Có thể skip nếu không có cache."""
+        pass

@@ -65,17 +65,19 @@ class GooseCliAdapter(LLMProviderPort):
                 f"Instruction (first 80 chars): {instruction_text[:80]}..."
             )
 
+            max_turns = instruction.max_turns if instruction.max_turns is not None else 50
             proc = await run_command_async(
-                ["goose", "run", "--max-turns", "50", "--text", instruction_text],
+                ["goose", "run", "--max-turns", str(max_turns), "--text", instruction_text],
                 cwd=str(config.TARGET_PATH),
                 env=env_override,
-                capture_output=False,
+                capture_output=True,
                 force_host=True,
                 timeout=instruction.timeout,
             )
 
             returncode = proc.returncode if hasattr(proc, "returncode") else 0
             exit_code = returncode
+            output_log = proc.stdout.strip() if hasattr(proc, "stdout") and proc.stdout else ""
 
             if returncode != 0:
                 logger.warning(f"      ⚠️ [Goose Agent] Exited with code {returncode}")

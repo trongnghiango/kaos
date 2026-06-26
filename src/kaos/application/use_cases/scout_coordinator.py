@@ -8,6 +8,7 @@ Là Application Use Case — chỉ phụ thuộc vào Ports và Domain Models.
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -171,16 +172,22 @@ class ScoutCoordinator:
             f"}}\n"
         )
 
-        exit_code, _logs = await self.llm_provider.run_agent(
+        exit_code, logs = await self.llm_provider.run_agent(
             AgentInstruction.from_raw(instruction, timeout=float(SCOUT_TIMEOUT))
         )
-        if exit_code == 0 and out_file.exists():
-            try:
-                return json.loads(out_file.read_text(encoding="utf-8"))
-            except Exception:
-                pass
 
-        # Fallback: trả về summary cơ bản
+        # Ưu tiên file output
+        result = self._try_parse_json_from_file(out_file)
+        if result is not None:
+            return result
+
+        # Fallback: parse JSON từ stdout logs
+        if exit_code == 0 and logs:
+            result = self._try_extract_json(logs)
+            if result is not None:
+                return result
+
+        # Fallback cuối: trả về summary cơ bản
         return {
             "tables": [Path(raw_data_path).stem],
             "columns": [],
@@ -225,16 +232,24 @@ class ScoutCoordinator:
             f"}}\n"
         )
 
-        exit_code, _logs = await self.llm_provider.run_agent(
+        exit_code, logs = await self.llm_provider.run_agent(
             AgentInstruction.from_raw(instruction, timeout=float(SCOUT_TIMEOUT))
         )
-        if exit_code == 0 and out_file.exists():
-            try:
-                return json.loads(out_file.read_text(encoding="utf-8"))
-            except Exception:
-                pass
 
-        # Fallback
+        # Ưu tiên file output
+        result = self._try_parse_json_from_file(out_file)
+        if result is not None:
+            return result
+
+        # Fallback: parse JSON từ stdout logs
+        if exit_code == 0 and logs:
+            result = self._try_extract_json(logs)
+            if result is not None:
+                logger.info("   ✅ [SpecScout] Parsed spec from LLM stdout")
+                return result
+
+        # Fallback cuối
+        logger.warning("   ⚠️ [SpecScout] LLM không trả về JSON hợp lệ — dùng fallback")
         return {
             "scope_type": "MODIFY",
             "target_module": "",
@@ -243,6 +258,70 @@ class ScoutCoordinator:
             "requires_tenancy": False,
             "complexity": "MEDIUM",
         }
+
+    # ── JSON Parse Helpers ──────────────────────────────────
+
+    @staticmethod
+    def _try_parse_json_from_file(path: Path) -> Optional[Dict[str, Any]]:
+        """Thử đọc JSON từ file. Trả về None nếu không đọc được."""
+        if path.exists():
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        return None
+
+    @staticmethod
+    def _try_extract_json(text: str) -> Optional[Dict[str, Any]]:
+        """
+        Trích xuất JSON object từ LLM stdout.
+        Chiến lược:
+        1. Thử parse toàn bộ text
+        2. Tìm ```json ... ``` block
+        3. Tìm { } đầu tiên với regex
+        4. Tìm từng dòng có dấu hiệu JSON field
+        """
+        if not text:
+            return None
+
+        # Strategy 1: parse toàn bộ text
+        try:
+            return json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Strategy 2: tìm fenced code block ```json ... ```
+        json_block_pattern = re.compile(
+            r"```(?:json)?\s*\n?(.*?)```", re.DOTALL
+        )
+        for match in json_block_pattern.finditer(text):
+            block = match.group(1).strip()
+            try:
+                return json.loads(block)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+        # Strategy 3: tìm { } ngoài cùng
+        brace_start = text.find("{")
+        if brace_start >= 0:
+            depth = 0
+            for i in range(brace_start, len(text)):
+                if text[i] == "{":
+                    depth += 1
+                elif text[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(text[brace_start : i + 1])
+                        except (json.JSONDecodeError, ValueError):
+                            break
+            # Nếu không đóng } → thử parse tới cuối
+            try:
+                return json.loads(text[brace_start:])
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        return None
 
     async def _empty_spec_summary(self) -> Dict[str, Any]:
         return {

@@ -6,7 +6,7 @@ Domain Value Objects for KAOS Framework
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 class TaskStatus(str, Enum):
@@ -75,6 +75,10 @@ class AgentInstruction:
     # Nếu để trống, GooseCliAdapter tự build từ skill_content + task_context.
     raw_instruction: str = ""
 
+    # Số turns tối đa Goose được chạy. Nếu None, Goose dùng default (thường là 50).
+    # Phải match với TaskBudget.max_turns để tránh timeout.
+    max_turns: Optional[int] = None
+
     @classmethod
     def from_raw(
         cls,
@@ -83,6 +87,7 @@ class AgentInstruction:
         skill_name: str = "unknown",
         target_path: str = "",
         output_file: str = "",
+        max_turns: Optional[int] = None,
     ) -> "AgentInstruction":
         """
         Factory method backward-compat: tạo AgentInstruction từ plain string.
@@ -97,4 +102,5 @@ class AgentInstruction:
             output_file=output_file,
             timeout=timeout,
             raw_instruction=instruction,
+            max_turns=max_turns,
         )

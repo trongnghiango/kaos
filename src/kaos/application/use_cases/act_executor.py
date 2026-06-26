@@ -13,6 +13,7 @@ Flow:
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -163,8 +164,16 @@ class ActExecutor:
                 f"{t.title} ({t.budget.max_turns} turns max)"
             )
 
+        # 1.5. Capture baseline compile errors (pre-existing)
+        baseline_errors = await self._capture_baseline_errors()
+        if baseline_errors:
+            logger.info(
+                f"   📋 Baseline compile errors: {baseline_errors['error_count']} "
+                f"(will ignore these when evaluating task quality)"
+            )
+
         # 2. Thực thi theo thứ tự dependency
-        results = await self._execute_with_dependencies(tasks, report)
+        results = await self._execute_with_dependencies(tasks, report, baseline_errors)
 
         # 3. Summary
         success_count = sum(1 for r in results if r.success)
@@ -274,6 +283,7 @@ class ActExecutor:
         self,
         tasks: List[ActTask],
         report: ScoutReport,
+        baseline_errors: Optional[Dict[str, Any]] = None,
     ) -> List[TaskExecutionResult]:
         """Execute tasks theo dependency order (level-based)."""
         results: List[TaskExecutionResult] = []
@@ -301,7 +311,7 @@ class ActExecutor:
 
             # Chạy song song các task cùng level
             batch_results = await asyncio.gather(*[
-                self._execute_single_task(t, report) for t in ready
+                self._execute_single_task(t, report, baseline_errors) for t in ready
             ])
 
             for r in batch_results:
@@ -310,12 +320,81 @@ class ActExecutor:
 
         return results
 
+    # ── Baseline Error Capture ───────────────────────────────
+
+    async def _capture_baseline_errors(self) -> Optional[Dict[str, Any]]:
+        """
+        Chạy compile check trước khi Act Phase bắt đầu.
+        Lưu kết quả baseline để sau này filter pre-existing errors.
+        Trả về dict với error_lines + error_count, hoặc None nếu không capture được.
+        """
+        try:
+            # Dùng module mặc định để check toàn bộ project
+            _passed, errors_str = await self.gatekeeper.compile_check(
+                module="all",
+                task_id="_baseline_",
+            )
+            error_lines = set()
+            if errors_str:
+                for line in errors_str.split("\n"):
+                    line = line.strip()
+                    if line and ("error TS" in line or "Cannot find" in line or "is not a module" in line):
+                        # Chuẩn hoá: bỏ dòng + số cột để so sánh
+                        normalized = re.sub(r'\(\d+,\d+\)', '', line).strip()
+                        error_lines.add(normalized)
+
+            baseline = {
+                "error_lines": error_lines,
+                "error_count": len(error_lines),
+                "raw": errors_str,
+            }
+            self._baseline_errors = baseline
+            return baseline
+        except Exception as e:
+            logger.debug(f"   ℹ️ Could not capture baseline errors: {e}")
+            self._baseline_errors = None
+            return None
+
+    @staticmethod
+    def _is_new_error(
+        compile_errors_str: str,
+        baseline: Optional[Dict[str, Any]],
+    ) -> Tuple[bool, str]:
+        """
+        So sánh compile errors với baseline.
+        Chỉ trả về True nếu có lỗi MỚI (không có trong baseline).
+
+        Returns:
+            (has_new_errors, new_errors_str)
+        """
+        if not baseline or not baseline.get("error_lines"):
+            # Không có baseline → tất cả lỗi đều mới
+            if compile_errors_str:
+                return True, compile_errors_str
+            return False, ""
+
+        baseline_lines = baseline["error_lines"]
+        new_lines = []
+        for line in compile_errors_str.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            # Chuẩn hoá để so sánh
+            normalized = re.sub(r'\(\d+,\d+\)', '', line).strip()
+            if normalized not in baseline_lines:
+                new_lines.append(line)
+
+        if new_lines:
+            return True, "\n".join(new_lines)
+        return False, ""
+
     # ── Single Task ──────────────────────────────────────────────
 
     async def _execute_single_task(
         self,
         task: ActTask,
         report: ScoutReport,
+        baseline_errors: Optional[Dict[str, Any]] = None,
     ) -> TaskExecutionResult:
         """Execute one ActTask với AutoFixer feedback loop."""
         logger.info(f"   ⏳ [{task.task_id}] Executing: {task.title}")
@@ -344,6 +423,7 @@ class ActExecutor:
             budget=budget,
             attempt_number=1,
             feedback_msg="",
+            baseline_errors=baseline_errors,
         )
 
         if success:
@@ -380,6 +460,7 @@ class ActExecutor:
                 budget=fix_budget,
                 attempt_number=attempt + 1,
                 feedback_msg=feedback_msg,
+                baseline_errors=baseline_errors,
             )
 
             if f_created:
@@ -432,6 +513,7 @@ class ActExecutor:
                 f"THESE FIX ATTEMPTS ALSO FAILED. "
                 f"Please rewrite from scratch with a fresh approach."
             ),
+            baseline_errors=baseline_errors,
         )
 
         if escalated:
@@ -466,6 +548,7 @@ class ActExecutor:
         budget: TaskBudget,
         attempt_number: int,
         feedback_msg: str,
+        baseline_errors: Optional[Dict[str, Any]] = None,
     ) -> Tuple[bool, str, List[str], List[str]]:
         """One execution attempt: LLM coder → compile check."""
         try:
@@ -492,6 +575,7 @@ class ActExecutor:
                     instruction,
                     timeout=float(budget.timeout_secs),
                     skill_name=skill_file.replace(".md", ""),
+                    max_turns=budget.max_turns,
                 )
             )
 
@@ -511,6 +595,19 @@ class ActExecutor:
 
             if compile_passed:
                 return True, "", files_created, files_modified
+
+            # C. Filter baseline errors (pre-existing, không phải do task này gây ra)
+            if baseline_errors:
+                has_new, new_errors = self._is_new_error(compile_err, baseline_errors)
+                if not has_new:
+                    logger.info(
+                        f"      ℹ️ Compile errors are all pre-existing — ignoring"
+                    )
+                    return True, "", files_created, files_modified
+                logger.warning(
+                    f"      ❌ Compile has NEW errors ({new_errors[:100]}...)"
+                )
+                return False, new_errors, files_created, files_modified
 
             logger.warning(f"      ❌ Compile failed: {compile_err[:120]}...")
             return False, compile_err, files_created, files_modified

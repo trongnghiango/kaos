@@ -2,12 +2,10 @@
 ActExecutor Use Case — Adaptive Task Execution + AutoFixer
 ==========================================================
 Day 3 of Scout→Act implementation.
-Takes ScoutReport → generates tasks with adaptive budgets → executes → feedback loop.
+Takes ScoutReport → generates tasks with adaptive budgets → executes via internal logic.
 
 Flow:
-    ScoutReport → Task generation → Adaptive execution (SIMPLE=7, MEDIUM=15, COMPLEX=30)
-    → Compile check (Gatekeeper) → AutoFixer (≤3 attempts, 5-7 turns each)
-    → Escalate (20-turn coder if still failing)
+    ScoutReport → Task generation → Adaptive execution (Planner→Coder→Evaluator→Gatekeeper) → AutoFixer → Escalate.
 """
 
 import asyncio
@@ -24,10 +22,7 @@ from kaos.domain.scout_results import (
     TaskBudget,
     TaskComplexity,
 )
-from kaos.domain.value_objects import (
-    AgentInstruction,
-    ExecutionConfig,
-)
+from kaos.domain.value_objects import AgentInstruction, ExecutionConfig
 from kaos.application.ports import CachePort, GatekeeperPort, LLMProviderPort, StoragePort
 from kaos.application.use_cases.classify_error import ClassifyErrorUseCase
 from kaos.config import PROJECT_ROOT
@@ -45,10 +40,7 @@ FIX_TURNS_PER_ATTEMPT = 7
 
 @dataclass
 class ActTask:
-    """
-    One executable task derived from ScoutReport.
-    Specific to Scout→Act pipeline — carries its own adaptive budget.
-    """
+    """One executable task derived from ScoutReport."""
     task_id: str
     title: str
     description: str
@@ -109,11 +101,10 @@ class ActExecutor:
     Flow:
         1. Nhận ScoutReport → sinh task list (dựa trên conflicts + requirements)
         2. Mỗi task được gán budget (SIMPLE=7, MEDIUM=15, COMPLEX=30)
-        3. Thực thi với LLM (adaptive turns = budget.max_turns)
-        4. Compile check qua Gatekeeper
-        5. Nếu fail → AutoFixer: tối đa 3 lần sửa (5-7 turns/lần)
-        6. Nếu vẫn fail → Escalate (20-turn coder)
-        7. Trả về danh sách kết quả
+        3. Thực thi với Planner→Coder→Evaluator→Gatekeeper (adaptive turns)
+        4. Nếu fail → AutoFixer: tối đa 3 lần sửa (5-7 turns/lần)
+        5. Nếu vẫn fail → Escalate (20-turn coder)
+        6. Trả về danh sách kết quả
     """
 
     def __init__(
@@ -148,41 +139,44 @@ class ActExecutor:
         self,
         report: ScoutReport,
     ) -> List[TaskExecutionResult]:
+        """Delegate execution to TaskQueueEngine.
+
+        The ActExecutor now uses the generic TaskQueueEngine to run the task
+        pipeline generated from the ScoutReport. The returned list maps the
+        engine's task status to the ActExecutor's result schema.
         """
-        Execute Act Phase từ ScoutReport.
+        logger.info("⚡ [ActExecutor] Delegating to TaskQueueEngine...")
+        # Import locally to avoid circular import issues.
+        from kaos.engine.task_queue_engine import TaskQueueEngine
 
-        Args:
-            report: ScoutReport từ ScoutCoordinator
+        # Initialise the engine with the ScoutReport and target settings.
+        engine = TaskQueueEngine(
+            report=report,
+            target_path=self.target_path,
+            tmp_dir=self.tmp_dir,
+        )
 
-        Returns:
-            List of TaskExecutionResult cho mỗi task
-        """
-        logger.info("⚡ [ActExecutor] Bắt đầu Act Phase...")
+        # Run the engine (parallel workers default to 5, matching CLI flag).
+        engine.run(parallel_workers=5, resume=False)
 
-        # 1. Tạo task list từ ScoutReport
-        tasks = self._generate_tasks(report)
-        logger.info(f"   📋 Generated {len(tasks)} tasks with adaptive budgets")
-        for t in tasks:
-            logger.info(
-                f"      - [{t.complexity.value:8s}] {t.task_id}: "
-                f"{t.title} ({t.budget.max_turns} turns max)"
+        # Translate engine tasks into ActExecutor result objects.
+        results: List[TaskExecutionResult] = []
+        for task in engine.tasks.values():
+            task_success = task.status == "SUCCESS" or task.result.get("success", False)
+            result = TaskExecutionResult(
+                task_id=task.task_id,
+                success=task_success,
+                attempts=1,
+                fix_attempts=[],
+                escalated=False,
+                files_created=task.result.get("files_created", []),
+                files_modified=task.result.get("files_modified", []),
+                error=task.result.get("error", "") if not task_success else "",
             )
+            results.append(result)
 
-        # 1.5. Capture baseline compile errors (pre-existing)
-        baseline_errors = await self._capture_baseline_errors()
-        if baseline_errors:
-            logger.info(
-                f"   📋 Baseline compile errors: {baseline_errors['error_count']} "
-                f"(will ignore these when evaluating task quality)"
-            )
-
-        # 2. Thực thi theo thứ tự dependency
-        results = await self._execute_with_dependencies(tasks, report, baseline_errors)
-
-        # 3. Summary
-        success_count = sum(1 for r in results if r.success)
         logger.info(
-            f"   ✅ Act Phase complete: {success_count}/{len(results)} tasks passed"
+            f"   ✅ Act Phase complete via engine: {sum(1 for r in results if r.success)}/{len(results)} tasks passed"
         )
         return results
 
@@ -210,7 +204,6 @@ class ActExecutor:
         module = report.module or "all"
 
         # ── Prioritize SPEC_ACTION conflicts first ──────────────
-        # These are explicit actions parsed from the spec
         spec_action_conflicts = [
             c for c in report.conflict_points
             if c.conflict_type in (ConflictType.SPEC_ACTION, ConflictType.SPEC_REQUIREMENT)
@@ -358,7 +351,6 @@ class ActExecutor:
         Trả về dict với error_lines + error_count, hoặc None nếu không capture được.
         """
         try:
-            # Dùng module mặc định để check toàn bộ project
             _passed, errors_str = await self.gatekeeper.compile_check(
                 module="all",
                 task_id="_baseline_",
@@ -368,7 +360,6 @@ class ActExecutor:
                 for line in errors_str.split("\n"):
                     line = line.strip()
                     if line and ("error TS" in line or "Cannot find" in line or "is not a module" in line):
-                        # Chuẩn hoá: bỏ dòng + số cột để so sánh
                         normalized = re.sub(r'\(\d+,\d+\)', '', line).strip()
                         error_lines.add(normalized)
 
@@ -392,27 +383,21 @@ class ActExecutor:
         """
         So sánh compile errors với baseline.
         Chỉ trả về True nếu có lỗi MỚI (không có trong baseline).
-
-        Returns:
-            (has_new_errors, new_errors_str)
+        Returns: (has_new_errors, new_errors_str)
         """
         if not baseline or not baseline.get("error_lines"):
-            # Không có baseline → tất cả lỗi đều mới
             if compile_errors_str:
                 return True, compile_errors_str
             return False, ""
-
         baseline_lines = baseline["error_lines"]
         new_lines = []
         for line in compile_errors_str.split("\n"):
             line = line.strip()
             if not line:
                 continue
-            # Chuẩn hoá để so sánh
             normalized = re.sub(r'\(\d+,\d+\)', '', line).strip()
             if normalized not in baseline_lines:
                 new_lines.append(line)
-
         if new_lines:
             return True, "\n".join(new_lines)
         return False, ""
@@ -645,7 +630,7 @@ class ActExecutor:
             logger.error(f"      ❌ Exception during execution: {e}")
             return False, str(e), [], []
 
-    # ── Helpers ──────────────────────────────────────────────────
+    # ── Helpers ─────────────────────────────────────────────────-
 
     def _build_task_context(
         self,

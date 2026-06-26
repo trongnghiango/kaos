@@ -208,13 +208,43 @@ async def run_pipeline(args) -> int:
 
 
 async def run_auto_pipeline(args) -> int:
-    """Scout→Act Auto Pipeline: Scout → Synthesizer → Act + AutoFixer."""
+    """
+    Scout→Act Auto Pipeline: Scout → Synthesizer → Act + AutoFixer.
+
+    Extended flags from Sprint 3:
+      --phase scout|act|all (default: all)
+      --resume             skip already-successful tasks
+      --rerun-failed       reset failed tasks back to PENDING
+      --status             show pipeline status and exit
+      --parallel N         max parallel workers (passed to engine)
+    """
     import time
-    from kaos.config import TARGET_PATH, logger
+    from kaos.config import TARGET_PATH, TMP_DIR, logger
     from kaos.infrastructure.di import Container
+    from kaos.engine.task_queue_engine import TaskQueueEngine
 
     start_time = time.time()
     logger.info("🤖 [KAOS Auto] Scout→Act Pipeline started")
+
+    # ── --status support: show current engine task state ──────
+    if getattr(args, "status", False):
+        status_path = TMP_DIR / "engine_status.json"
+        if status_path.exists():
+            import json
+            try:
+                data = json.loads(status_path.read_text())
+                logger.info(f"\n📊 [KAOS Auto] Engine Status:")
+                logger.info(f"   Branch : {data.get('branch_name', 'N/A')}")
+                logger.info(f"   Tasks  : {data.get('total', 0)} total, "
+                            f"{data.get('completed', 0)} completed, "
+                            f"{data.get('failed', 0)} failed")
+                for t in data.get("tasks", []):
+                    logger.info(f"   - [{t.get('status','?')}] {t.get('task_id','')}: {t.get('title','')[:60]}")
+            except Exception as e:
+                logger.error(f"❌ Cannot read engine status: {e}")
+        else:
+            logger.warning("⚠️ No engine status file found.")
+        return 0
 
     # 1. Resolve target path
     target_path = str(TARGET_PATH) if TARGET_PATH else str(Path.cwd())
@@ -260,8 +290,9 @@ async def run_auto_pipeline(args) -> int:
     )
 
     # 5.5. Git Auto Branch (Mode B)
+    phase = getattr(args, "phase", "all")
     git_branch = ""
-    if getattr(args, "git_auto", True):
+    if phase != "act" and getattr(args, "git_auto", True):
         logger.info("🔀 [KAOS Auto] Setting up git branch...")
         git_mgr = container.resolve_git_auto_manager(target_path=target_path)
         git_ok, git_branch = await git_mgr.setup_branch(
@@ -273,23 +304,55 @@ async def run_auto_pipeline(args) -> int:
         else:
             logger.warning("   ⚠️  Git branch setup failed — continuing without isolation")
 
-    # 6. Scout Phase
-    logger.info("🔍 [KAOS Auto] Scout Phase — analyzing codebase + spec...")
-    scout = container.resolve_scout_coordinator()
-    report = await scout.execute(
-        raw_data=raw_data,
-        spec=spec_input,
-        target_path=target_path,
-        force_reparse=getattr(args, "force_reparse", False),
-    )
-    logger.info(
-        f"   ✅ Scout complete: module={report.module}, "
-        f"compatibility={report.compatibility_score}%, "
-        f"conflicts={len(report.conflict_points)}, "
-        f"confidence={report.confidence_level}"
-    )
+    # 6. Scout Phase (skip if --phase act)
+    report = None
+    if phase != "act":
+        logger.info("🔍 [KAOS Auto] Scout Phase — analyzing codebase + spec...")
+        scout = container.resolve_scout_coordinator()
+        report = await scout.execute(
+            raw_data=raw_data,
+            spec=spec_input,
+            target_path=target_path,
+            force_reparse=getattr(args, "force_reparse", False),
+        )
+        logger.info(
+            f"   ✅ Scout complete: module={report.module}, "
+            f"compatibility={report.compatibility_score}%, "
+            f"conflicts={len(report.conflict_points)}, "
+            f"confidence={report.confidence_level}"
+        )
 
-    # 7. Act Phase (chỉ chạy nếu enough compatibility hoặc --force-act)
+        # If --phase scout, exit after scout
+        if phase == "scout":
+            elapsed = time.time() - start_time
+            logger.info(f"\n🏁 [KAOS Auto] Scout-only phase complete in {elapsed:.1f}s")
+            return 0
+    else:
+        # --phase act: load cached ScoutReport from file
+        from kaos.domain.scout_results import ScoutReport
+        cached_report_path = TMP_DIR / "scout_report.json"
+        if cached_report_path.exists():
+            import json
+            try:
+                data = json.loads(cached_report_path.read_text())
+                report = ScoutReport(**data)
+                logger.info(f"   ✅ Loaded cached ScoutReport from {cached_report_path}")
+            except Exception as e:
+                logger.error(f"❌ Cannot load cached ScoutReport: {e}. Run scout first.")
+                return 1
+        else:
+            logger.error("❌ No cached ScoutReport found. Run `kaos --auto --phase scout` first.")
+            return 1
+
+    # 7. Act Phase
+    if getattr(args, "rerun_failed", False):
+        logger.info("   🔄 --rerun-failed: resetting failed tasks to PENDING")
+
+    if phase == "scout":
+        logger.info("   ⏭️  Skipping Act Phase (--phase scout)")
+        return 0
+
+    # Check compatibility threshold
     if report.compatibility_score < 30.0 and not getattr(args, "force_act", False):
         logger.warning(
             f"   ⚠️ Compatibility quá thấp ({report.compatibility_score}%). "

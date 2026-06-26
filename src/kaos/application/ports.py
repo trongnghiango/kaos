@@ -41,6 +41,16 @@ class GitPort(ABC):
         """Kiểm tra sự tồn tại của nhánh"""
         pass
 
+    @abstractmethod
+    async def push(self, branch_name: str) -> bool:
+        """Push nhánh lên remote origin (set upstream nếu cần)."""
+        pass
+
+    @abstractmethod
+    async def get_current_branch(self) -> str:
+        """Lấy tên nhánh hiện tại."""
+        pass
+
 
 class StoragePort(ABC):
     """Port thao tác tệp tin & lưu trữ dữ liệu"""

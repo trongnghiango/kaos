@@ -207,6 +207,142 @@ async def run_pipeline(args) -> int:
     return 0
 
 
+async def run_auto_pipeline(args) -> int:
+    """Scout→Act Auto Pipeline: Scout → Synthesizer → Act + AutoFixer."""
+    import time
+    from kaos.config import TARGET_PATH, logger
+    from kaos.infrastructure.di import Container
+
+    start_time = time.time()
+    logger.info("🤖 [KAOS Auto] Scout→Act Pipeline started")
+
+    # 1. Resolve target path
+    target_path = str(TARGET_PATH) if TARGET_PATH else str(Path.cwd())
+
+    # 2. Resolve spec
+    spec_input = args.spec if args.spec else None
+    if spec_input:
+        spec_path = Path(spec_input)
+        if not spec_path.is_absolute():
+            cwd_path = (Path.cwd() / spec_path).resolve()
+            if cwd_path.exists():
+                spec_input = str(cwd_path)
+        elif spec_path.exists():
+            spec_input = spec_path.read_text(encoding="utf-8")
+
+    # 3. Resolve raw_data
+    raw_data = args.raw_data if args.raw_data else None
+    if raw_data:
+        raw_path = Path(raw_data)
+        if not raw_path.is_absolute():
+            cwd_raw = (Path.cwd() / raw_path).resolve()
+            if cwd_raw.exists():
+                raw_data = str(cwd_raw)
+
+    # 4. Auto-detect module nếu là "auto"
+    module = args.module
+    if module == "auto":
+        temp_container = Container(target_module="system", branch_name=args.branch)
+        detect_use_case = temp_container.resolve_detect_scope()
+        try:
+            detected_scope = await detect_use_case.execute(spec=spec_input, raw_data=raw_data)
+            module = detected_scope.get("recommended_module", "all")
+            logger.info(f"🎯 [KAOS Auto] Detected module: '{module}'")
+        except Exception as e:
+            logger.warning(f"   ⚠️ Auto-detect failed: {e}. Using fallback='all'.")
+            module = "all"
+
+    # 5. Init container
+    container = Container(
+        target_module=module,
+        branch_name=args.branch,
+        llm_provider=getattr(args, "llm_provider", None),
+    )
+
+    # 5.5. Git Auto Branch (Mode B)
+    git_branch = ""
+    if getattr(args, "git_auto", True):
+        logger.info("🔀 [KAOS Auto] Setting up git branch...")
+        git_mgr = container.resolve_git_auto_manager(target_path=target_path)
+        git_ok, git_branch = await git_mgr.setup_branch(
+            module=module,
+            description=spec_input[:40] if spec_input else "",
+        )
+        if git_ok:
+            logger.info(f"   ✅ Working on branch: {git_branch}")
+        else:
+            logger.warning("   ⚠️  Git branch setup failed — continuing without isolation")
+
+    # 6. Scout Phase
+    logger.info("🔍 [KAOS Auto] Scout Phase — analyzing codebase + spec...")
+    scout = container.resolve_scout_coordinator()
+    report = await scout.execute(
+        raw_data=raw_data,
+        spec=spec_input,
+        target_path=target_path,
+        force_reparse=getattr(args, "force_reparse", False),
+    )
+    logger.info(
+        f"   ✅ Scout complete: module={report.module}, "
+        f"compatibility={report.compatibility_score}%, "
+        f"conflicts={len(report.conflict_points)}, "
+        f"confidence={report.confidence_level}"
+    )
+
+    # 7. Act Phase (chỉ chạy nếu enough compatibility hoặc --force-act)
+    if report.compatibility_score < 30.0 and not getattr(args, "force_act", False):
+        logger.warning(
+            f"   ⚠️ Compatibility quá thấp ({report.compatibility_score}%). "
+            f"Bỏ qua Act Phase. Dùng --force-act để override."
+        )
+        logger.info(f"📋 Scout Report: {report.reasoning}")
+        return 1
+
+    logger.info("⚡ [KAOS Auto] Act Phase — executing tasks...")
+    executor = container.resolve_act_executor(target_path=target_path)
+    results = await executor.execute(report=report)
+
+    # 8. Summary
+    success_count = sum(1 for r in results if r.success)
+    total_count = len(results)
+    elapsed = time.time() - start_time
+
+    logger.info(
+        f"\n{'='*50}\n"
+        f"🏁 [KAOS Auto] Pipeline complete in {elapsed:.1f}s\n"
+        f"   Tasks: {success_count}/{total_count} passed\n"
+        f"   Module: {module}\n"
+        f"   Compatibility: {report.compatibility_score}%\n"
+        f"   Confidence: {report.confidence_level}\n"
+        f"{'='*50}"
+    )
+
+    for r in results:
+        status_icon = "✅" if r.success else "❌"
+        logger.info(f"   {status_icon} [{r.task_id}] attempts={r.attempts}, escalated={r.escalated}")
+        if r.files_created:
+            logger.info(f"      Created: {', '.join(r.files_created)}")
+        if r.files_modified:
+            logger.info(f"      Modified: {', '.join(r.files_modified)}")
+
+    # 9. Git Auto Commit + Push
+    if git_branch and getattr(args, "git_auto", True):
+        logger.info("📤 [KAOS Auto] Committing and pushing changes...")
+        commit_ok, commit_msg = await git_mgr.commit_and_push(
+            branch_name=git_branch,
+            results=results,
+            module=module,
+        )
+        if commit_ok and commit_msg != "no-changes":
+            logger.info(f"   ✅ Committed: {commit_msg[:80]}...")
+            logger.info(f"   🌐 Push to create PR: origin/{git_branch}")
+
+        # Finalize: checkout về main
+        await git_mgr.finalize(original_branch="main")
+
+    return 0 if all(r.success for r in results) else 1
+
+
 def main():
     # 0. Tiền xử lý cờ --target-path để thiết lập môi trường trước khi các module khác import config
     target_path = None
@@ -290,11 +426,28 @@ def main():
             "Ví dụ: --llm-provider antigravity"
         ),
     )
-
-
+    parser.add_argument(
+        "--auto",
+        action="store_true",
+        help="Chế độ Scout→Act tự động: Scout Phase (parallel) → Synthesizer → Act Phase + AutoFixer",
+    )
+    parser.add_argument(
+        "--force-reparse",
+        action="store_true",
+        help="Bypass schema cache, force re-extract trong Scout Phase",
+    )
+    parser.add_argument(
+        "--force-act",
+        action="store_true",
+        help="Force chạy Act Phase kể cả khi compatibility score thấp",
+    )
 
     args = parser.parse_args()
-    sys.exit(asyncio.run(run_pipeline(args)))
+
+    if args.auto:
+        sys.exit(asyncio.run(run_auto_pipeline(args)))
+    else:
+        sys.exit(asyncio.run(run_pipeline(args)))
 
 
 if __name__ == "__main__":

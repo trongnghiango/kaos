@@ -79,3 +79,35 @@ class GitCliAdapter(GitPort):
             force_host=True,
         )
         return getattr(res, "returncode", 1) == 0
+
+    async def push(self, branch_name: str) -> bool:
+        """Push nhánh lên origin, set upstream nếu cần."""
+        try:
+            # Đảm bảo đang đúng branch
+            await run_command_async(
+                ["git", "checkout", branch_name],
+                cwd=str(config.TARGET_PATH),
+                capture_output=True,
+                force_host=True,
+            )
+            res = await run_command_async(
+                ["git", "push", "-u", "origin", branch_name],
+                cwd=str(config.TARGET_PATH),
+                capture_output=True,
+                force_host=True,
+            )
+            return getattr(res, "returncode", 1) == 0
+        except Exception:
+            return False
+
+    async def get_current_branch(self) -> str:
+        """Lấy tên nhánh git hiện tại."""
+        res = await run_command_async(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=str(config.TARGET_PATH),
+            capture_output=True,
+            force_host=True,
+        )
+        if hasattr(res, "returncode") and res.returncode == 0:
+            return res.stdout.strip()
+        return "main"

@@ -11,7 +11,7 @@ from pathlib import Path
 # Domain models/configs
 from kaos.domain.value_objects import ExecutionConfig, SessionMetadata
 # Application Ports
-from kaos.application.ports import GitPort, StoragePort, GatekeeperPort, LLMProviderPort
+from kaos.application.ports import CachePort, GitPort, StoragePort, GatekeeperPort, LLMProviderPort
 # Application Use Cases
 from kaos.application.use_cases import (
     ExtractSchemaUseCase,
@@ -20,6 +20,9 @@ from kaos.application.use_cases import (
     ExecuteWorkflowUseCase,
     ClassifyErrorUseCase,
     AnalyzeCompatibilityUseCase,
+    ScoutCoordinator,
+    ActExecutor,
+    GitAutoManager,
 )
 
 # Infrastructure Adapters
@@ -29,6 +32,7 @@ from kaos.infrastructure.adapters import (
     TsGatekeeperAdapter,
     GooseCliAdapter,
     AntigravityAdapter,
+    FileCacheAdapter,
 )
 
 # Thống nhất constants từ config.py hiện hành
@@ -45,6 +49,7 @@ from kaos.config import (
     TIMEOUT_SECS_GATEKEEPER,
     CONFIG,
     TMP_DIR,
+    TARGET_PATH,
 )
 
 
@@ -168,4 +173,42 @@ class Container:
             gatekeeper=self.gatekeeper_adapter,
             config=self.config,
             tmp_dir=self.tmp_dir,
+        )
+
+    # ── Scout→Act Resolvers ──────────────────────────────────────
+
+    def resolve_cache(self) -> FileCacheAdapter:
+        """Trả về cache adapter (singleton pattern)."""
+        if not hasattr(self, "_cache_adapter"):
+            self._cache_adapter = FileCacheAdapter()
+        return self._cache_adapter
+
+    def resolve_scout_coordinator(self) -> ScoutCoordinator:
+        return ScoutCoordinator(
+            llm_provider=self.llm_adapter,
+            gatekeeper=self.gatekeeper_adapter,
+            storage=self.storage_adapter,
+            cache=self.resolve_cache(),
+            config=self.config,
+            tmp_dir=self.tmp_dir,
+        )
+
+    def resolve_act_executor(self, target_path: str = "") -> ActExecutor:
+        resolved_target = target_path or (str(TARGET_PATH) if TARGET_PATH else str(Path.cwd()))
+        return ActExecutor(
+            llm_provider=self.llm_adapter,
+            gatekeeper=self.gatekeeper_adapter,
+            storage=self.storage_adapter,
+            cache=self.resolve_cache(),
+            config=self.config,
+            tmp_dir=self.tmp_dir,
+            target_path=resolved_target,
+        )
+
+    def resolve_git_auto_manager(self, target_path: str = "") -> GitAutoManager:
+        resolved_target = target_path or (str(TARGET_PATH) if TARGET_PATH else str(Path.cwd()))
+        return GitAutoManager(
+            git=self.git_adapter,
+            storage=self.storage_adapter,
+            target_path=resolved_target,
         )

@@ -45,6 +45,7 @@ from kaos.domain.scout_results import (
 from kaos.domain.value_objects import AgentInstruction
 from kaos.engine.execution_policy import FeedbackPolicy
 from kaos.application.ports import LLMProviderPort, GatekeeperPort, StoragePort
+from kaos.domain.models import Task, DecisionEngine, DecisionRule
 
 # Import Sandbox Facade — fallback an toàn
 try:
@@ -132,6 +133,7 @@ class TaskQueueEngine:
         gatekeeper: Optional[GatekeeperPort] = None,
         storage: Optional[StoragePort] = None,
         feedback_policy: Optional[FeedbackPolicy] = None,
+        classify_error: Optional[Any] = None,
     ):
         self.report = report
         self.queue_file = Path(queue_file) if queue_file else None
@@ -139,6 +141,7 @@ class TaskQueueEngine:
         self.branch_name = branch_name or f"kaos/engine-{module}-{int(time.time())}"
         self.tmp_dir = tmp_dir or TMP_DIR
         self.target_path = target_path or str(TARGET_PATH)
+        self.classify_error = classify_error
         self.tasks: Dict[str, Task] = {}
         self.level_groups: Dict[int, List[Task]] = {}
         self.execution_log: List[dict] = []
@@ -150,6 +153,13 @@ class TaskQueueEngine:
         self.gatekeeper = self._resolve_gatekeeper(gatekeeper)
         self.storage = self._resolve_storage(storage)
         self.feedback_policy = self._resolve_feedback_policy(feedback_policy)
+
+        # Cấu hình DecisionEngine cho Architecture checks
+        default_rules = [
+            DecisionRule(principle="purity", weight=1.5, description="Tuân thủ ranh giới Clean Architecture"),
+            DecisionRule(principle="correctness", weight=1.0, description="Biên dịch TypeScript và chạy Test"),
+        ]
+        self.decision_engine = DecisionEngine(rules=default_rules)
 
     def _resolve_llm_provider(self, provider: Optional[LLMProviderPort]) -> LLMProviderPort:
         if provider is not None:
@@ -731,6 +741,34 @@ class TaskQueueEngine:
             logger.error(f"      ❌ Exception during compile check: {e}")
             return CompileResult(passed=False, new_errors=str(e))
 
+    async def _run_gatekeeper_architecture(self, task: Task, attempt: int) -> Tuple[bool, str]:
+        """Kiểm tra quy tắc kiến trúc. Trả về (passed, error_msg)."""
+        logger.info(f"   🏗️  [Architecture Check] Checking architecture rules...")
+        try:
+            res = await self.gatekeeper.check_architecture(
+                file_paths=[],  # TS Bridge tự detect files đã thay đổi
+                task_id=f"{task.task_id}_a{attempt}"
+            )
+            if isinstance(res, tuple) and len(res) == 2:
+                arch_passed, arch_violations = res
+            else:
+                arch_passed, arch_violations = True, []
+
+            diag_score, diag_reasons = self.decision_engine.evaluate_violations(
+                compile_passed=True,
+                compile_error="",
+                arch_passed=arch_passed,
+                violations=arch_violations
+            )
+            if not arch_passed:
+                logger.warning(f"      ❌ Vi phạm kiến trúc (Score: {diag_score:.1f}/100)!")
+                reasons_str = "\n".join(diag_reasons[:5])
+                return False, f"[ARCHITECTURE GATEKEEPER] Code vi phạm quy tắc kiến trúc dự án!\nĐiểm chất lượng: {diag_score:.1f}/100\nCác vi phạm:\n{reasons_str}"
+            return True, ""
+        except Exception as e:
+            logger.error(f"      ❌ Exception during architecture check: {e}")
+            return False, str(e)
+
     # ────────────── 4e. GATEKEEPER TEST HELPER ──────────────────
 
     async def _run_gatekeeper_test(
@@ -831,12 +869,58 @@ class TaskQueueEngine:
                 "error": error_msg if not success_ else "",
             }
 
+        history_file = self.tmp_dir / f"error_history_{task.task_id}.json"
+        history = []
+        if self.storage.file_exists(history_file):
+            try:
+                history = self.storage.read_json(history_file)
+            except Exception:
+                pass
+
+        async def _handle_failure(attempt: int, stage: str, raw_err: str) -> bool:
+            if not self.classify_error:
+                return False
+            history.append({
+                "attempt": attempt,
+                "stage": stage,
+                "error": raw_err,
+            })
+            try:
+                self.storage.write_json(history_file, history)
+            except Exception:
+                pass
+            try:
+                classification = await self.classify_error.execute(
+                    task=task,
+                    error_stage=stage,
+                    error_message=raw_err,
+                    attempt_number=attempt,
+                    previous_attempts=history,
+                )
+                max_retries = max_fix + 2
+                if classification.can_skip and attempt >= max_retries // 2:
+                    logger.info(
+                        f"   ⏭️ [Error Classifier] Skipping task '{task.task_id}'. Confidence: {classification.confidence}"
+                    )
+                    task.status = "SKIPPED"
+                    task.result = {
+                        "success": False,
+                        "skipped": True,
+                        "reason": classification.root_cause,
+                        "error": raw_err,
+                    }
+                    self._stats["skipped"] += 1
+                    return True
+            except Exception as e:
+                logger.error(f"Error classifying error: {e}")
+            return False
+
         async def _run_full_cycle(
             attempt: int,
             budget_: TaskBudget,
             feedback: str,
-        ) -> bool:
-            """Run one full Code → Eval → Compile → Test cycle. Returns True if all pass."""
+        ) -> Tuple[bool, str, str]:
+            """Run Code → Eval → Compile → Arch → Test cycle. Returns (success, stage, error)."""
             nonlocal files_created, files_modified, error_msg
 
             coder_res = await self._run_coder(
@@ -850,7 +934,7 @@ class TaskQueueEngine:
             )
             if not coder_res.success:
                 error_msg = coder_res.error_msg or "Coder agent failed"
-                return False
+                return False, "coder", error_msg
 
             if coder_res.files_created:
                 files_created = coder_res.files_created
@@ -861,33 +945,42 @@ class TaskQueueEngine:
             eval_res = await self._run_evaluator(task, ctx_file, files_created, files_modified)
             if eval_res.verdict != "PASS":
                 error_msg = eval_res.feedback_msg or "Evaluator rejected changes"
-                return False
+                return False, "evaluator", error_msg
 
             # Gatekeeper compile
             compile_res = await self._run_gatekeeper_compile(task, attempt, baseline)
             if not compile_res.passed:
                 error_msg = compile_res.new_errors or "Compilation failed"
-                return False
+                return False, "compile", error_msg
+
+            # Gatekeeper architecture check
+            arch_passed, arch_err = await self._run_gatekeeper_architecture(task, attempt)
+            if not arch_passed:
+                error_msg = arch_err or "Architecture boundary check failed"
+                return False, "arch", error_msg
 
             # Gatekeeper test
             test_res = await self._run_gatekeeper_test(task, attempt)
             if not test_res.passed:
                 error_msg = test_res.error or "Tests failed"
-                return False
+                return False, "test", error_msg
 
-            return True
+            return True, "", ""
 
         # ── First attempt ──
         attempt_count += 1
-        first_ok = await _run_full_cycle(attempt_count, budget, "")
+        first_ok, failed_stage, raw_error = await _run_full_cycle(attempt_count, budget, "")
         if first_ok:
             logger.info(f"   ✅ [{task.task_id}] Passed on first attempt")
             return _build_result(True)
 
-        # ── AutoFixer attempts ──
         max_fix = self.feedback_policy.max_fix_attempts
         fix_turns = self.feedback_policy.fix_turns_per_attempt
 
+        if await _handle_failure(attempt_count, failed_stage, raw_error):
+            return {"success": False, "skipped": True}
+
+        # ── AutoFixer attempts ──
         if max_fix > 0:
             logger.info(f"   🔧 [{task.task_id}] AutoFixer: starting fix loop (max {max_fix} attempts)...")
             feedback_msg = error_msg
@@ -905,7 +998,7 @@ class TaskQueueEngine:
                     fix_turns_per_attempt=fix_turns,
                 )
 
-                fix_ok = await _run_full_cycle(attempt_count, fix_budget, feedback_msg)
+                fix_ok, failed_stage, raw_error = await _run_full_cycle(attempt_count, fix_budget, feedback_msg)
 
                 fix_attempts.append(FixAttempt(
                     attempt_number=fix_i,
@@ -916,6 +1009,9 @@ class TaskQueueEngine:
                 if fix_ok:
                     logger.info(f"   ✅ [{task.task_id}] Fixed on attempt {fix_i}")
                     return _build_result(True)
+
+                if await _handle_failure(attempt_count, failed_stage, raw_error):
+                    return {"success": False, "skipped": True}
 
                 feedback_msg = error_msg
 
@@ -937,7 +1033,7 @@ class TaskQueueEngine:
                 fix_turns_per_attempt=fix_turns,
             )
 
-            esc_ok = await _run_full_cycle(
+            esc_ok, failed_stage, raw_error = await _run_full_cycle(
                 attempt_count,
                 escalate_budget,
                 f"FIRST ATTEMPT ERROR: {error_msg}\n\n"
@@ -948,6 +1044,9 @@ class TaskQueueEngine:
             if esc_ok:
                 logger.info(f"   ✅ [{task.task_id}] Fixed after escalation")
                 return _build_result(True)
+
+            if await _handle_failure(attempt_count, failed_stage, raw_error):
+                return {"success": False, "skipped": True}
 
         logger.error(f"   ⛔ [{task.task_id}] All attempts failed.")
         return _build_result(False)
@@ -992,6 +1091,10 @@ class TaskQueueEngine:
             self._stats["completed"] += 1
             self._save_queue_status()
             logger.info(f"   ✅  [{task.task_id}] All checks PASSED")
+            return True
+        elif result.get("skipped", False):
+            self._save_queue_status()
+            logger.info(f"   ✅  [{task.task_id}] Skipped by classifier")
             return True
         else:
             task.status = "FAILED"

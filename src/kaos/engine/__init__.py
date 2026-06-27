@@ -7,3 +7,9 @@ Replaces the ad-hoc Goose execution in ActExecutor with a robust
 Planner → Coder → Evaluator → Gatekeeper pipeline, support for
 topological sort, parallel execution, resume/rerun, and supervisor monitoring.
 """
+
+from .task_queue_engine import TaskQueueEngine
+from .execution_policy import FeedbackPolicy
+
+__all__ = ["TaskQueueEngine", "FeedbackPolicy"]
+

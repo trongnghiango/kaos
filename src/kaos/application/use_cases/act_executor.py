@@ -26,6 +26,7 @@ from kaos.domain.value_objects import AgentInstruction, ExecutionConfig
 from kaos.application.ports import CachePort, GatekeeperPort, LLMProviderPort, StoragePort
 from kaos.application.use_cases.classify_error import ClassifyErrorUseCase
 from kaos.config import PROJECT_ROOT
+from kaos.engine import TaskQueueEngine, FeedbackPolicy
 
 logger = logging.getLogger("KAOS_Harness")
 
@@ -138,45 +139,90 @@ class ActExecutor:
     async def execute(
         self,
         report: ScoutReport,
+        parallel: int = 1,
+        resume: bool = False,
     ) -> List[TaskExecutionResult]:
-        """Delegate execution to TaskQueueEngine.
-
-        The ActExecutor now uses the generic TaskQueueEngine to run the task
-        pipeline generated from the ScoutReport. The returned list maps the
-        engine's task status to the ActExecutor's result schema.
         """
-        logger.info("⚡ [ActExecutor] Delegating to TaskQueueEngine...")
-        # Import locally to avoid circular import issues.
-        from kaos.engine.task_queue_engine import TaskQueueEngine
+        Execute Act Phase từ ScoutReport.
+        Delegates to TaskQueueEngine for task execution (Planner→Coder→Evaluator→Gatekeeper→AutoFixer→Escalate).
+        """
+        logger.info("⚡ [ActExecutor] Bắt đầu Act Phase...")
 
-        # Initialise the engine with the ScoutReport and target settings.
-        engine = TaskQueueEngine(
-            report=report,
-            target_path=self.target_path,
-            tmp_dir=self.tmp_dir,
-        )
-
-        # Run the engine (parallel workers default to 5, matching CLI flag).
-        engine.run(parallel_workers=5, resume=False)
-
-        # Translate engine tasks into ActExecutor result objects.
-        results: List[TaskExecutionResult] = []
-        for task in engine.tasks.values():
-            task_success = task.status == "SUCCESS" or task.result.get("success", False)
-            result = TaskExecutionResult(
-                task_id=task.task_id,
-                success=task_success,
-                attempts=1,
-                fix_attempts=[],
-                escalated=False,
-                files_created=task.result.get("files_created", []),
-                files_modified=task.result.get("files_modified", []),
-                error=task.result.get("error", "") if not task_success else "",
+        # 1. Tạo task list từ ScoutReport
+        tasks = self._generate_tasks(report)
+        logger.info(f"   📋 Generated {len(tasks)} tasks with adaptive budgets")
+        for t in tasks:
+            logger.info(
+                f"      - [{t.complexity.value:8s}] {t.task_id}: "
+                f"{t.title} ({t.budget.max_turns} turns max)"
             )
-            results.append(result)
 
+        # 2. Capture baseline compile errors (pre-existing)
+        baseline_errors = await self._capture_baseline_errors()
+        if baseline_errors:
+            logger.info(
+                f"   📋 Baseline compile errors: {baseline_errors['error_count']} "
+                f"(will ignore these when evaluating task quality)"
+            )
+
+        # 3. Delegated execution to TaskQueueEngine
+        logger.info("   ⚙️ [ActExecutor] Delegating to TaskQueueEngine...")
+        engine = TaskQueueEngine(
+            report=None,
+            queue_file=None,
+            module="auto",
+            branch_name=None,
+            tmp_dir=self.tmp_dir,
+            target_path=self.target_path,
+            llm_provider=self.llm_provider,
+            gatekeeper=self.gatekeeper,
+            storage=self.storage,
+            feedback_policy=FeedbackPolicy(
+                max_fix_attempts=MAX_FIX_ATTEMPTS,
+                fix_turns_per_attempt=FIX_TURNS_PER_ATTEMPT,
+                escalate_turns=BUDGET_ESCALATE,
+                enable_escalation=True,
+            ),
+        )
+        engine.load_pregenerated_tasks(tasks)
+        engine._baseline_errors = baseline_errors
+        await engine.run(parallel_workers=parallel, resume=resume)
+
+        # 4. Map engine tasks → TaskExecutionResult list
+        results: List[TaskExecutionResult] = []
+        for t in engine.tasks.values():
+            res = t.result if t.result else {}
+            if hasattr(t, "budget") and t.budget:
+                # ActTask with FixAttempt objects in fix_attempts
+                fix_attempts_list = res.get("fix_attempts", [])
+            else:
+                # Native engine Task — fix_attempts may be dicts; convert to FixAttempt objects
+                fix_attempts_list = []
+                for fa in res.get("fix_attempts", []):
+                    if isinstance(fa, dict):
+                        fix_attempts_list.append(FixAttempt(
+                            attempt_number=fa.get("attempt_number", 0),
+                            error_message=fa.get("error_message", ""),
+                            success=fa.get("success", False),
+                        ))
+                    else:
+                        fix_attempts_list.append(fa)
+
+            results.append(TaskExecutionResult(
+                task_id=t.task_id,
+                success=res.get("success", False),
+                attempts=res.get("attempts", 1),
+                fix_attempts=fix_attempts_list,
+                escalated=res.get("escalated", False),
+                files_created=res.get("files_created", []),
+                files_modified=res.get("files_modified", []),
+                error=res.get("error", ""),
+            ))
+
+        # 5. Summary
+        success_count = sum(1 for r in results if r.success)
         logger.info(
-            f"   ✅ Act Phase complete via engine: {sum(1 for r in results if r.success)}/{len(results)} tasks passed"
+            f"   ✅ Act Phase complete: {success_count}/{len(results)} tasks passed"
         )
         return results
 
@@ -299,49 +345,6 @@ class ActExecutor:
 
         return tasks
 
-    # ── Dependency Execution ─────────────────────────────────────
-
-    async def _execute_with_dependencies(
-        self,
-        tasks: List[ActTask],
-        report: ScoutReport,
-        baseline_errors: Optional[Dict[str, Any]] = None,
-    ) -> List[TaskExecutionResult]:
-        """Execute tasks theo dependency order (level-based)."""
-        results: List[TaskExecutionResult] = []
-        executed: set = set()
-
-        while len(executed) < len(tasks):
-            # Tasks sẵn sàng: dependencies đã hoàn thành
-            ready = [
-                t for t in tasks
-                if t.task_id not in executed
-                and all(dep in executed for dep in t.depends_on)
-            ]
-
-            if not ready:
-                logger.error("   ❌ Circular dependency detected in ActTask list!")
-                for t in tasks:
-                    if t.task_id not in executed:
-                        results.append(TaskExecutionResult(
-                            task_id=t.task_id,
-                            success=False,
-                            error="Circular dependency",
-                        ))
-                        executed.add(t.task_id)
-                break
-
-            # Chạy song song các task cùng level
-            batch_results = await asyncio.gather(*[
-                self._execute_single_task(t, report, baseline_errors) for t in ready
-            ])
-
-            for r in batch_results:
-                results.append(r)
-                executed.add(r.task_id)
-
-        return results
-
     # ── Baseline Error Capture ───────────────────────────────
 
     async def _capture_baseline_errors(self) -> Optional[Dict[str, Any]]:
@@ -401,317 +404,6 @@ class ActExecutor:
         if new_lines:
             return True, "\n".join(new_lines)
         return False, ""
-
-    # ── Single Task ──────────────────────────────────────────────
-
-    async def _execute_single_task(
-        self,
-        task: ActTask,
-        report: ScoutReport,
-        baseline_errors: Optional[Dict[str, Any]] = None,
-    ) -> TaskExecutionResult:
-        """Execute one ActTask với AutoFixer feedback loop."""
-        logger.info(f"   ⏳ [{task.task_id}] Executing: {task.title}")
-
-        # 1. Prepare context
-        ctx = self._build_task_context(task, report)
-        ctx_file = self.tmp_dir / f"act_ctx_{task.task_id}.json"
-        self.storage.write_json(ctx_file, ctx)
-
-        # 2. Select skill
-        skill_file = self._select_skill_file(task.title)
-
-        # 3. Execute with adaptive budget
-        fix_attempts: List[FixAttempt] = []
-        success = False
-        error_msg = ""
-        files_created: List[str] = []
-        files_modified: List[str] = []
-
-        # --- First attempt: full budget execution ---
-        budget = task.budget
-        success, error_msg, files_created, files_modified = await self._attempt_execution(
-            task=task,
-            ctx_file=ctx_file,
-            skill_file=skill_file,
-            budget=budget,
-            attempt_number=1,
-            feedback_msg="",
-            baseline_errors=baseline_errors,
-        )
-
-        if success:
-            logger.info(f"   ✅ [{task.task_id}] Passed on first attempt")
-            return TaskExecutionResult(
-                task_id=task.task_id,
-                success=True,
-                files_created=files_created,
-                files_modified=files_modified,
-            )
-
-        # --- AutoFixer: up to MAX_FIX_ATTEMPTS ---
-        logger.info(f"   🔧 [{task.task_id}] AutoFixer: starting fix loop...")
-        feedback_msg = error_msg
-
-        for attempt in range(1, MAX_FIX_ATTEMPTS + 1):
-            logger.info(
-                f"   🔄 [{task.task_id}] Fix attempt {attempt}/{MAX_FIX_ATTEMPTS}"
-            )
-
-            fix_budget = TaskBudget(
-                task_id=task.task_id,
-                complexity=task.complexity,
-                max_turns=FIX_TURNS_PER_ATTEMPT,
-                timeout_secs=budget.timeout_secs,
-                max_fix_attempts=MAX_FIX_ATTEMPTS,
-                fix_turns_per_attempt=FIX_TURNS_PER_ATTEMPT,
-            )
-
-            success, error_msg, f_created, f_modified = await self._attempt_execution(
-                task=task,
-                ctx_file=ctx_file,
-                skill_file=skill_file,
-                budget=fix_budget,
-                attempt_number=attempt + 1,
-                feedback_msg=feedback_msg,
-                baseline_errors=baseline_errors,
-            )
-
-            if f_created:
-                files_created = f_created
-            if f_modified:
-                files_modified = f_modified
-
-            fix_attempts.append(FixAttempt(
-                attempt_number=attempt,
-                error_message=error_msg,
-                success=success,
-            ))
-
-            if success:
-                logger.info(f"   ✅ [{task.task_id}] Fixed on attempt {attempt}")
-                return TaskExecutionResult(
-                    task_id=task.task_id,
-                    success=True,
-                    attempts=1 + attempt,
-                    fix_attempts=fix_attempts,
-                    files_created=files_created,
-                    files_modified=files_modified,
-                )
-
-            feedback_msg = error_msg
-
-        # --- Escalate: 20-turn coder nếu vẫn fail ---
-        logger.warning(
-            f"   ⚠️ [{task.task_id}] AutoFixer failed after {MAX_FIX_ATTEMPTS}. "
-            f"Escalating with {BUDGET_ESCALATE}-turn coder..."
-        )
-
-        escalate_budget = TaskBudget(
-            task_id=task.task_id,
-            complexity=TaskComplexity.COMPLEX,
-            max_turns=BUDGET_ESCALATE,
-            timeout_secs=budget.timeout_secs * 2,
-            max_fix_attempts=MAX_FIX_ATTEMPTS,
-            fix_turns_per_attempt=FIX_TURNS_PER_ATTEMPT,
-        )
-
-        escalated, esc_error, esc_created, esc_modified = await self._attempt_execution(
-            task=task,
-            ctx_file=ctx_file,
-            skill_file=skill_file,
-            budget=escalate_budget,
-            attempt_number=MAX_FIX_ATTEMPTS + 2,
-            feedback_msg=(
-                f"FIRST ATTEMPT ERROR: {feedback_msg}\n\n"
-                f"THESE FIX ATTEMPTS ALSO FAILED. "
-                f"Please rewrite from scratch with a fresh approach."
-            ),
-            baseline_errors=baseline_errors,
-        )
-
-        if escalated:
-            logger.info(f"   ✅ [{task.task_id}] Fixed after escalation")
-            return TaskExecutionResult(
-                task_id=task.task_id,
-                success=True,
-                attempts=MAX_FIX_ATTEMPTS + 2,
-                fix_attempts=fix_attempts,
-                escalated=True,
-                files_created=esc_created,
-                files_modified=esc_modified,
-            )
-
-        logger.error(f"   ⛔ [{task.task_id}] Failed after escalation")
-        return TaskExecutionResult(
-            task_id=task.task_id,
-            success=False,
-            attempts=MAX_FIX_ATTEMPTS + 2,
-            fix_attempts=fix_attempts,
-            escalated=True,
-            error=esc_error,
-        )
-
-    # ── Execution Attempt ────────────────────────────────────────
-
-    async def _attempt_execution(
-        self,
-        task: ActTask,
-        ctx_file: Path,
-        skill_file: str,
-        budget: TaskBudget,
-        attempt_number: int,
-        feedback_msg: str,
-        baseline_errors: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[bool, str, List[str], List[str]]:
-        """One execution attempt: LLM coder → compile check."""
-        try:
-            # A. Run LLM Coder
-            out_file = self.tmp_dir / f"act_out_{task.task_id}_a{attempt_number}.json"
-
-            instruction = self._build_coder_instruction(
-                task=task,
-                ctx_file=ctx_file,
-                skill_file=skill_file,
-                out_file=out_file,
-                budget=budget,
-            )
-
-            if feedback_msg:
-                instruction += (
-                    f"\n\n===== LẦN TRƯỚC THẤT BẠI ====="
-                    f"Hãy khắc phục lỗi sau:\n{feedback_msg[:3000]}\n"
-                    f"================================"
-                )
-
-            exit_code, _logs = await self.llm_provider.run_agent(
-                AgentInstruction.from_raw(
-                    instruction,
-                    timeout=float(budget.timeout_secs),
-                    skill_name=skill_file.replace(".md", ""),
-                    max_turns=budget.max_turns,
-                )
-            )
-
-            if exit_code != 0:
-                error = f"LLM Runtime Error (exit code: {exit_code})"
-                logger.warning(f"      ⚠️ {error}")
-                return False, error, [], []
-
-            # Parse coder output
-            files_created, files_modified = self._parse_coder_output(out_file)
-
-            # B. Compile Check (Gatekeeper)
-            compile_passed, compile_err = await self.gatekeeper.compile_check(
-                task.module,
-                f"{task.task_id}_a{attempt_number}",
-            )
-
-            if compile_passed:
-                return True, "", files_created, files_modified
-
-            # C. Filter baseline errors (pre-existing, không phải do task này gây ra)
-            if baseline_errors:
-                has_new, new_errors = self._is_new_error(compile_err, baseline_errors)
-                if not has_new:
-                    logger.info(
-                        f"      ℹ️ Compile errors are all pre-existing — ignoring"
-                    )
-                    return True, "", files_created, files_modified
-                logger.warning(
-                    f"      ❌ Compile has NEW errors ({new_errors[:100]}...)"
-                )
-                return False, new_errors, files_created, files_modified
-
-            logger.warning(f"      ❌ Compile failed: {compile_err[:120]}...")
-            return False, compile_err, files_created, files_modified
-
-        except Exception as e:
-            logger.error(f"      ❌ Exception during execution: {e}")
-            return False, str(e), [], []
-
-    # ── Helpers ─────────────────────────────────────────────────-
-
-    def _build_task_context(
-        self,
-        task: ActTask,
-        report: ScoutReport,
-    ) -> Dict[str, Any]:
-        """Build structured context JSON cho LLM execution."""
-        return {
-            "task_id": task.task_id,
-            "title": task.title,
-            "description": task.description,
-            "module": task.module,
-            "complexity": task.complexity.value,
-            "max_turns": task.budget.max_turns,
-            "target_path": self.target_path,
-            "schema_summary": report.schema_summary,
-            "raw_data_summary": report.raw_data_summary,
-            "spec_summary": report.spec_summary,
-            "conflict_points": [
-                {
-                    "type": c.conflict_type.value,
-                    "severity": c.severity.value,
-                    "description": c.description,
-                    "suggestion": c.suggestion,
-                }
-                for c in report.conflict_points
-            ],
-            "compatibility_score": report.compatibility_score,
-            "reasoning": report.reasoning,
-        }
-
-    def _build_coder_instruction(
-        self,
-        task: ActTask,
-        ctx_file: Path,
-        skill_file: str,
-        out_file: Path,
-        budget: TaskBudget,
-    ) -> str:
-        """Build LLM instruction cho một execution attempt."""
-        return (
-            f"Bạn là KAOS Act Coder. Thực thi task sau với tối đa {budget.max_turns} turns.\n\n"
-            f"=== TASK ===\n"
-            f"ID: {task.task_id}\n"
-            f"Title: {task.title}\n"
-            f"Module: {task.module}\n"
-            f"Độ phức tạp: {task.complexity.value}\n\n"
-            f"=== MÔ TẢ ===\n"
-            f"{task.description}\n\n"
-            f"=== CONTEXT ===\n"
-            f"Đọc context JSON từ file: {ctx_file.resolve()}\n\n"
-            f"=== HƯỚNG DẪN ===\n"
-            f"1. Đọc codebase hiện tại tại: {self.target_path}\n"
-            f"2. Phân tích context + spec + schema để hiểu yêu cầu\n"
-            f"3. Viết code theo Clean Architecture (Domain → Application → Interface → Infrastructure)\n"
-            f"4. KHÔNG tự chạy lệnh biên dịch - Gatekeeper bên ngoài sẽ lo việc đó\n"
-            f"5. Ghi kết quả vào file JSON: {out_file.resolve()}\n\n"
-            f"=== FORMAT JSON ĐẦU RA ===\n"
-            f"{{\n"
-            f'  "success": true,\n'
-            f'  "files_created": ["path/to/new_file.ts"],\n'
-            f'  "files_modified": ["path/to/existing_file.ts"],\n'
-            f'  "summary": "Mô tả ngắn những gì đã làm"\n'
-            f"}}\n"
-        )
-
-    @staticmethod
-    def _parse_coder_output(
-        out_file: Path,
-    ) -> Tuple[List[str], List[str]]:
-        """Parse coder output file lấy danh sách files."""
-        if not out_file.exists():
-            return [], []
-        try:
-            data = json.loads(out_file.read_text(encoding="utf-8"))
-            return (
-                data.get("files_created", []),
-                data.get("files_modified", []),
-            )
-        except (json.JSONDecodeError, OSError):
-            return [], []
 
     @staticmethod
     def _select_skill_file(title: str) -> str:

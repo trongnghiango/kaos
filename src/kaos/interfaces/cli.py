@@ -481,7 +481,11 @@ def main():
     parser.add_argument(
         "--llm-provider",
         dest="llm_provider",
+<<<<<<< Updated upstream
         choices=["goose", "claude-code", "antigravity"],
+=======
+        choices=["goose", "antigravity", "claude-code"],
+>>>>>>> Stashed changes
         default=None,
         help=(
             "LLM provider được dùng để thực thi task. Mặc định đọc từ KAOS_LLM_PROVIDER env "

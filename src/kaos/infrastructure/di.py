@@ -33,6 +33,7 @@ from kaos.infrastructure.adapters import (
     GooseCliAdapter,
     ClaudeCodeAdapter,
     AntigravityAdapter,
+    ClaudeCodeAdapter,
     FileCacheAdapter,
 )
 
@@ -119,6 +120,9 @@ class Container:
                 handshake_dir=handshake_dir,
                 poll_interval=poll_interval,
             )
+
+        elif provider_name == "claude-code":
+            return ClaudeCodeAdapter()
 
         else:
             raise ValueError(

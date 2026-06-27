@@ -17,8 +17,9 @@ import json
 import time
 import subprocess
 import signal
+import re
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass, field
 
 from kaos.config import (
@@ -28,6 +29,9 @@ from kaos.config import (
     PATHS_CONF,
     MAX_RETRIES_CODER,
     MAX_RETRIES_PLANNER,
+    TIMEOUT_SECS_PLANNER,
+    TIMEOUT_SECS_CODER,
+    TIMEOUT_SECS_GATEKEEPER,
     Prompts,
     logger,
 )
@@ -38,6 +42,9 @@ from kaos.domain.scout_results import (
     TaskBudget,
     TaskComplexity,
 )
+from kaos.domain.value_objects import AgentInstruction
+from kaos.engine.execution_policy import FeedbackPolicy
+from kaos.application.ports import LLMProviderPort, GatekeeperPort, StoragePort
 
 # Import Sandbox Facade — fallback an toàn
 try:
@@ -57,6 +64,33 @@ except ImportError:
                 text=True, bufsize=1,
             )
             return process
+
+
+@dataclass
+class CoderResult:
+    success: bool
+    files_created: List[str] = field(default_factory=list)
+    files_modified: List[str] = field(default_factory=list)
+    error_msg: str = ""
+
+
+@dataclass
+class EvalResult:
+    verdict: str  # "PASS" | "REWORK" | "FAIL"
+    feedback_msg: str = ""
+
+
+@dataclass
+class CompileResult:
+    passed: bool
+    new_errors: str = ""
+
+
+@dataclass
+class TestResult:
+    passed: bool
+    error: str = ""
+
 
 
 # ── Task dataclass ──────────────────────────────────────────────
@@ -93,6 +127,11 @@ class TaskQueueEngine:
         branch_name: Optional[str] = None,
         tmp_dir: Optional[Path] = None,
         target_path: Optional[str] = None,
+        # --- injected ports (optional, defaults preserve backward compat) ---
+        llm_provider: Optional[LLMProviderPort] = None,
+        gatekeeper: Optional[GatekeeperPort] = None,
+        storage: Optional[StoragePort] = None,
+        feedback_policy: Optional[FeedbackPolicy] = None,
     ):
         self.report = report
         self.queue_file = Path(queue_file) if queue_file else None
@@ -104,11 +143,49 @@ class TaskQueueEngine:
         self.level_groups: Dict[int, List[Task]] = {}
         self.execution_log: List[dict] = []
         self._stats = {"total": 0, "completed": 0, "failed": 0, "skipped": 0}
+        self._baseline_errors: Optional[dict] = None
+
+        # Resolve ports with lazy imports to prevent circular references
+        self.llm_provider = self._resolve_llm_provider(llm_provider)
+        self.gatekeeper = self._resolve_gatekeeper(gatekeeper)
+        self.storage = self._resolve_storage(storage)
+        self.feedback_policy = self._resolve_feedback_policy(feedback_policy)
+
+    def _resolve_llm_provider(self, provider: Optional[LLMProviderPort]) -> LLMProviderPort:
+        if provider is not None:
+            return provider
+        from kaos.infrastructure.adapters.llm_adapter import GooseCliAdapter
+        return GooseCliAdapter()
+
+    def _resolve_gatekeeper(self, gk: Optional[GatekeeperPort]) -> GatekeeperPort:
+        if gk is not None:
+            return gk
+        from kaos.infrastructure.adapters.gatekeeper_adapter import TsGatekeeperAdapter
+        return TsGatekeeperAdapter()
+
+    def _resolve_storage(self, st: Optional[StoragePort]) -> StoragePort:
+        if st is not None:
+            return st
+        from kaos.infrastructure.adapters.storage_adapter import FileStorageAdapter
+        return FileStorageAdapter()
+
+    def _resolve_feedback_policy(self, fp: Optional[FeedbackPolicy]) -> FeedbackPolicy:
+        return fp if fp is not None else FeedbackPolicy()
 
     # ────────────── 1. LOAD TASKS ─────────────────────────────────
 
     def load(self, resume: bool = False) -> None:
         """Load tasks from whichever source was provided: ScoutReport or CSV."""
+        # If tasks were preloaded via load_pregenerated_tasks, use them directly.
+        if self.tasks:
+            # Ensure level groups are cleared for fresh level calculation.
+            self.level_groups.clear()
+            # Reset stats (except total tasks).
+            self._stats = {"total": len(self.tasks), "completed": 0, "failed": 0, "skipped": 0}
+            logger.info(f"📦 [Queue] Using pre-loaded {len(self.tasks)} tasks")
+            return
+
+        # Otherwise load from report or CSV (original behavior).
         self.tasks.clear()
         self.level_groups.clear()
         self._stats = {"total": 0, "completed": 0, "failed": 0, "skipped": 0}
@@ -124,41 +201,18 @@ class TaskQueueEngine:
         logger.info(f"📦 [Queue] Loaded {len(self.tasks)} tasks")
 
     def _load_queue_csv(self, resume: bool = False) -> None:
-        """Load tasks from a CSV/TSV file."""
-        if not self.queue_file.exists():
+        """Load tasks from a CSV/TSV file using the storage port."""
+        if not self.queue_file or not self.queue_file.exists():
             raise FileNotFoundError(f"Queue file not found: {self.queue_file}")
-
-        with open(self.queue_file, "r") as f:
-            first_line = f.readline().strip()
-            delimiter = "\t" if "\t" in first_line else ","
-            f.seek(0)
-
-            reader = csv.DictReader(f, delimiter=delimiter)
-            required_cols = {"task_id", "title", "description"}
-            if not required_cols.issubset(reader.fieldnames):
-                raise ValueError(
-                    f"CSV must have columns: {required_cols}. Found: {reader.fieldnames}"
-                )
-
-            for row in reader:
-                task_id = row["task_id"].strip()
-                depends_raw = row.get("depends_on", "").strip()
-                depends = [d.strip() for d in depends_raw.split(",") if d.strip()]
-                status = row.get("status", "PENDING").strip()
-
-                task = Task(
-                    task_id=task_id,
-                    module=row.get("module", self.module).strip(),
-                    title=row["title"].strip(),
-                    description=row["description"].strip(),
-                    depends_on=depends,
-                    status=status,
-                )
-                self.tasks[task_id] = task
-
-                if resume and status == "SUCCESS":
+        # Delegate the loading/parsing to the storage adapter implementation.
+        loaded_tasks = self.storage.load_queue_tasks(self.queue_file, self.module, resume=resume)
+        self.tasks.update(loaded_tasks)
+        if resume:
+            # Count how many tasks were already marked SUCCESS for stats.
+            for t in loaded_tasks.values():
+                if t.status == "SUCCESS":
                     self._stats["completed"] += 1
-                    logger.info(f"   ⏭️  [{task_id}] Already SUCCESS — resuming.")
+                    logger.info(f"   ⏭️  [{t.task_id}] Already SUCCESS — resuming.")
 
     def _generate_tasks_from_report(self, report: ScoutReport) -> None:
         """
@@ -265,6 +319,16 @@ class TaskQueueEngine:
                 t.depends_on = list(fix_ids)
 
         logger.info(f"   📋 Generated {len(self.tasks)} tasks from ScoutReport")
+
+    def load_pregenerated_tasks(self, tasks: List[Task]) -> None:
+        """Directly load a pre-generated list of Task objects (used by ActExecutor)."""
+        self.tasks = {t.task_id: t for t in tasks}
+        self._stats = {"total": len(self.tasks), "completed": 0, "failed": 0, "skipped": 0}
+        for t in tasks:
+            status = getattr(t, "status", None)
+            if status == "SUCCESS":
+                self._stats["completed"] += 1
+        logger.info(f"📦 [Queue] Loaded {len(self.tasks)} pre-generated tasks")
 
     # ────────────── 2. TOPOLOGICAL SORT ───────────────────────────
 
@@ -397,293 +461,226 @@ class TaskQueueEngine:
             f"- Steps:\n{steps}"
         )
 
-    async def _execute_single_task(self, session_name: str, task: Task) -> bool:
-        """
-        Execute one task: Planner → Coder → Evaluator → Gatekeeper (compile + test).
-        Implements retry loop with feedback.
-        """
-        if task.status == "SUCCESS":
-            logger.info(f"   ⏭️  [{task.task_id}] Already SUCCESS — skipping.")
-            self._stats["completed"] += 1
-            return True
+    # ── Task Context Builder ─────────────────────────────────────────
 
-        logger.info(f"   ⏳  [{task.task_id}] Executing: {task.title}")
-
-        task_ctx = {
+    def _build_task_context(self, task: Task) -> Dict[str, Any]:
+        """Build structured context JSON for LLM execution, merging task details and ScoutReport if available."""
+        ctx = {
             "task_id": task.task_id,
-            "module": task.module,
             "title": task.title,
             "description": task.description,
+            "module": task.module,
             "depends_on": task.depends_on,
+            "target_path": self.target_path,
         }
 
-        task_ctx_file = self.tmp_dir / f"goose_ctx_{task.task_id}.json"
-        with open(task_ctx_file, "w") as f:
-            json.dump(task_ctx, f, indent=2)
+        # If task is an ActTask (or derived), extract complexity / budget info
+        if hasattr(task, "budget") and task.budget:
+            ctx["complexity"] = task.budget.complexity.value
+            ctx["max_turns"] = task.budget.max_turns
+        elif hasattr(task, "complexity") and task.complexity:
+            ctx["complexity"] = task.complexity.value
+        else:
+            ctx["complexity"] = "MEDIUM"
+            ctx["max_turns"] = 15
 
-        skill_file = self._select_skill_file(task.title)
+        if self.report:
+            ctx.update({
+                "schema_summary": self.report.schema_summary,
+                "raw_data_summary": self.report.raw_data_summary,
+                "spec_summary": self.report.spec_summary,
+                "conflict_points": [
+                    {
+                        "type": c.conflict_type.value,
+                        "severity": c.severity.value,
+                        "description": c.description,
+                        "suggestion": c.suggestion,
+                    }
+                    for c in self.report.conflict_points
+                ],
+                "compatibility_score": self.report.compatibility_score,
+                "reasoning": self.report.reasoning,
+            })
+        return ctx
 
-        max_retries = MAX_RETRIES_CODER
-        attempts = 0
-        success = False
-        feedback_msg = ""
+    # ────────────── 4a. PLANNER HELPER ──────────────────────────────
 
-        while attempts < max_retries and not success:
-            attempts += 1
-            if attempts > 1:
-                logger.info(f"   🔄 [Retry {attempts}/{max_retries}] for task {task.task_id}...")
+    async def _run_planner(self, task_ctx_file: Path, plan_file: Path) -> bool:
+        """Run the planner agent (first attempt only). Returns True if plan file was created."""
+        task_id = task_ctx_file.stem.replace("goose_ctx_", "").replace("act_ctx_", "")
+        logger.info(f"   🧭 [Planner] Analysing complexity & planning for {task_id}...")
 
-            # --- PLANNER AGENT (first attempt only) ---
-            plan_file = self.tmp_dir / f"plan_{task.task_id}.json"
-            if attempts == 1:
-                logger.info(f"   🧭 [Planner] Analysing complexity & planning for {task.task_id}...")
+        plan_instruction = Prompts.PLANNER.format(
+            ctx_file_path=task_ctx_file.resolve(),
+            plan_file_path=plan_file.resolve(),
+        )
 
-                plan_instruction = Prompts.PLANNER.format(
-                    ctx_file_path=task_ctx_file.resolve(),
-                    plan_file_path=plan_file.resolve(),
+        try:
+            exit_code, _logs = await self.llm_provider.run_agent(
+                AgentInstruction.from_raw(
+                    plan_instruction,
+                    timeout=float(TIMEOUT_SECS_PLANNER),
+                    skill_name="cli-backend",
                 )
+            )
+            if exit_code == 0 and plan_file.exists():
+                logger.info("      ✅ [Planner] Plan complete.")
+                return True
+        except Exception as e:
+            logger.warning(f"      ⚠️ [Planner] Exception: {e}")
 
-                import os
-                env_override = os.environ.copy()
+        logger.warning("      ⚠️ [Planner] Failed — will code directly.")
+        return False
 
-                run_command(
-                    ["goose", "run", "--text", plan_instruction],
-                    cwd=str(TARGET_PATH),
-                    env=env_override,
-                    capture_output=True,
-                    force_host=True,
-                )
+    # ────────────── 4b. CODER HELPER ────────────────────────────────
 
-                if plan_file.exists():
-                    logger.info("      ✅ [Planner] Plan complete.")
-                else:
-                    logger.warning("      ⚠️ [Planner] Failed — will code directly.")
+    async def _run_coder(
+        self,
+        task: Task,
+        ctx_file: Path,
+        skill_file: str,
+        tactical_plan: str,
+        attempt: int,
+        feedback_msg: str,
+        budget: TaskBudget,
+    ) -> CoderResult:
+        """Run the coder agent. Returns CoderResult."""
+        out_file = self.tmp_dir / f"act_out_{task.task_id}_a{attempt}.json"
 
-            tactical_plan = ""
-            if plan_file.exists():
-                try:
-                    plan_data = json.loads(plan_file.read_text())
-                    tactical_plan = self._generate_tactical_plan(plan_data)
-                except Exception:
-                    pass
+        instruction = (
+            f"Bạn là KAOS Act Coder. Thực thi task sau với tối đa {budget.max_turns} turns.\n\n"
+            f"=== TASK ===\n"
+            f"ID: {task.task_id}\n"
+            f"Title: {task.title}\n"
+            f"Module: {task.module}\n"
+            f"Độ phức tạp: {budget.complexity.value}\n\n"
+            f"=== MÔ TẢ ===\n"
+            f"{task.description}\n\n"
+            f"=== CONTEXT ===\n"
+            f"Đọc context JSON từ file: {ctx_file.resolve()}\n\n"
+        )
+        if tactical_plan:
+            instruction += f"=== ARCHITECTURE PLAN ===\n{tactical_plan}\n\n"
 
-            # --- CODER AGENT ---
-            coder_instruction = Prompts.CODER.format(
-                skill_file_path=str((KAOS_ROOT / 'skills' / skill_file).resolve()),
-                ctx_file_path=task_ctx_file.resolve(),
-                tactical_plan=tactical_plan,
-                output_file_path=str((self.tmp_dir / f'goose_out_{task.task_id}.json').resolve()),
+        instruction += (
+            f"=== HƯỚNG DẪN ===\n"
+            f"1. Đọc codebase hiện tại tại: {self.target_path}\n"
+            f"2. Phân tích context + spec + schema để hiểu yêu cầu\n"
+            f"3. Viết code theo Clean Architecture (Domain → Application → Interface → Infrastructure)\n"
+            f"4. KHÔNG tự chạy lệnh biên dịch - Gatekeeper bên ngoài sẽ lo việc đó\n"
+            f"5. Ghi kết quả vào file JSON: {out_file.resolve()}\n\n"
+            f"=== FORMAT JSON ĐẦU RA ===\n"
+            f"{{\n"
+            f'  "success": true,\n'
+            f'  "files_created": ["path/to/new_file.ts"],\n'
+            f'  "files_modified": ["path/to/existing_file.ts"],\n'
+            f'  "summary": "Mô tả ngắn những gì đã làm"\n'
+            f"}}\n"
+        )
+
+        if feedback_msg:
+            instruction += (
+                f"\n\n===== LẦN TRƯỚC THẤT BẠI====="
+                f"Hãy khắc phục lỗi sau:\n{feedback_msg[:3000]}\n"
+                f"================================"
             )
 
-            if feedback_msg:
-                coder_instruction += (
-                    f"\n\nIMPORTANT: Previous attempt failed. Fix these errors:\n{feedback_msg}"
+        logger.info(f"   🦆 [Coder] Calling agent for {task.task_id} (attempt {attempt})...")
+
+        try:
+            exit_code, _logs = await self.llm_provider.run_agent(
+                AgentInstruction.from_raw(
+                    instruction,
+                    timeout=float(budget.timeout_secs),
+                    skill_name=skill_file.replace(".md", ""),
+                    max_turns=budget.max_turns,
                 )
-
-            logger.info(f"   🦆 [Coder] Calling Goose for {task.task_id} (attempt {attempts})...")
-
-            import os
-            env_override = os.environ.copy()
-
-            proc = run_command(
-                ["goose", "run", "--text", coder_instruction],
-                cwd=str(TARGET_PATH),
-                env=env_override,
-                capture_output=False,
-                force_host=True,
             )
 
-            returncode = proc.returncode if hasattr(proc, "returncode") else 0
+            if exit_code != 0:
+                return CoderResult(success=False, error_msg=f"LLM Runtime Error (exit code: {exit_code})")
 
-            if returncode != 0:
-                logger.warning(f"   ❌ Goose task {task.task_id} failed (exit {returncode})")
-                if attempts < max_retries - 1:
-                    feedback_msg = f"Goose agent did not complete (exit {returncode}). Try again."
-                continue
-
-            # --- EVALUATOR AGENT ---
-            logger.info(f"   🔍 [Evaluator] Checking task {task.task_id}...")
-
-            changed_files = []
-            coder_out_file = self.tmp_dir / f"goose_out_{task.task_id}.json"
-            if coder_out_file.exists():
+            # Parse the output JSON
+            files_created, files_modified = [], []
+            if out_file.exists():
                 try:
-                    with open(coder_out_file, "r") as f:
-                        coder_res = json.load(f)
-                        changed_files.extend(coder_res.get("files_modified", []))
-                        changed_files.extend(coder_res.get("files_created", []))
-                        changed_files = list(set(changed_files))
+                    data = json.loads(out_file.read_text(encoding="utf-8"))
+                    return CoderResult(
+                        success=data.get("success", True),
+                        files_created=data.get("files_created", []),
+                        files_modified=data.get("files_modified", []),
+                    )
                 except Exception as e:
                     logger.debug(f"      ⚠️ Cannot read coder output: {e}")
+                    return CoderResult(success=False, error_msg=f"Malformed coder output: {e}")
+            else:
+                # Fallback: check old goose_out path
+                fallback_out = self.tmp_dir / f"goose_out_{task.task_id}.json"
+                if fallback_out.exists():
+                    try:
+                        data = json.loads(fallback_out.read_text(encoding="utf-8"))
+                        return CoderResult(
+                            success=data.get("success", True),
+                            files_created=data.get("files_created", []),
+                            files_modified=data.get("files_modified", []),
+                        )
+                    except Exception:
+                        pass
+                return CoderResult(success=False, error_msg="Coder output file not found")
+        except Exception as e:
+            logger.error(f"      ❌ Exception during coding: {e}")
+            return CoderResult(success=False, error_msg=str(e))
 
-            eval_ctx = {
-                "original_requirements": task.description,
-                "changed_files": changed_files,
-                "schema_status": task.module,
-            }
-            eval_ctx_file = self.tmp_dir / f"eval_ctx_{task.task_id}.json"
-            with open(eval_ctx_file, "w") as f:
-                json.dump(eval_ctx, f, indent=2)
+    # ────────────── 4c. EVALUATOR HELPER ──────────────────────────
 
-            eval_out_file = self.tmp_dir / f"goose_out_eval_{task.task_id}.json"
+    async def _run_evaluator(
+        self,
+        task: Task,
+        ctx_file: Path,
+        files_created: List[str],
+        files_modified: List[str],
+    ) -> EvalResult:
+        """Run evaluator check. Returns EvalResult."""
+        logger.info(f"   🔍 [Evaluator] Checking task {task.task_id}...")
 
-            eval_instruction = Prompts.EVALUATOR.format(
-                eval_ctx_file_path=eval_ctx_file.resolve(),
-                eval_out_file_path=eval_out_file.resolve(),
-            )
+        changed_files = list(set(files_created + files_modified))
+        eval_ctx = {
+            "original_requirements": task.description,
+            "changed_files": changed_files,
+            "schema_status": task.module,
+        }
+        eval_ctx_file = self.tmp_dir / f"eval_ctx_{task.task_id}.json"
+        with open(eval_ctx_file, "w") as f:
+            json.dump(eval_ctx, f, indent=2)
 
-            run_command(
-                ["goose", "run", "--text", eval_instruction],
-                cwd=str(TARGET_PATH),
-                env=env_override,
-                capture_output=False,
-                force_host=True,
+        eval_out_file = self.tmp_dir / f"goose_out_eval_{task.task_id}.json"
+        eval_instruction = Prompts.EVALUATOR.format(
+            eval_ctx_file_path=eval_ctx_file.resolve(),
+            eval_out_file_path=eval_out_file.resolve(),
+        )
+
+        try:
+            exit_code, _logs = await self.llm_provider.run_agent(
+                AgentInstruction.from_raw(
+                    eval_instruction,
+                    timeout=float(TIMEOUT_SECS_PLANNER),
+                    skill_name="cli-review",
+                )
             )
 
             verdict = "PASS"
+            feedback_msg = ""
             if eval_out_file.exists():
                 try:
                     eval_result = json.loads(eval_out_file.read_text())
                     verdict = eval_result.get("verdict", "PASS")
-                except Exception:
-                    pass
-
-            if verdict == "REWORK":
-                logger.warning(f"      🔄 [Evaluator] REWORK needed for {task.task_id}")
-                success = False
-                if eval_out_file.exists():
-                    try:
-                        eval_result = json.loads(eval_out_file.read_text())
-                        issues = eval_result.get("issues", [])
-                        if issues:
-                            lines = ["Evaluator requires REWORK:"]
-                            for issue in issues:
-                                lines.append(
-                                    f"- [{issue.get('severity','INFO')}] {issue.get('field','')}: "
-                                    f"{issue.get('message','')}"
-                                )
-                                sug = issue.get("suggestion", "")
-                                if sug:
-                                    lines.append(f"  → Fix: {sug}")
-                            feedback_msg = "\n".join(lines)
-                    except Exception:
-                        pass
-                continue
-            elif verdict == "FAIL":
-                logger.error(f"      ❌ [Evaluator] FAIL for {task.task_id}")
-                success = False
-                feedback_msg = "[Evaluator] Code failed critical requirements."
-                continue
-
-            logger.info(f"      ✅ [Evaluator] {task.task_id} PASSED requirements")
-
-            # --- GATEKEEPER: COMPILE CHECK ---
-            logger.info(f"   🛡️  [Gatekeeper] TypeScript compilation check...")
-            node_path = PATHS_CONF.get("node_sandbox_path", "node") if is_sandbox_enabled() else PATHS_CONF.get("node_path", "/usr/bin/node")
-            tsx_cli = (
-                PATHS_CONF.get("tsx_cli_sandbox", "/app/tools/autoresearch/node_modules/tsx/dist/cli.mjs")
-                if is_sandbox_enabled()
-                else str((KAOS_ROOT / PATHS_CONF.get("tsx_cli_relative", "node_modules/tsx/dist/cli.mjs")).resolve())
-            )
-            executor_script = str(KAOS_ROOT / "bridge" / "executor.ts")
-
-            compile_ctx = {"action": "compile", "module": task.module}
-            compile_ctx_file = self.tmp_dir / f"compile_ctx_{task.task_id}.json"
-            with open(compile_ctx_file, "w") as f:
-                json.dump(compile_ctx, f)
-
-            compile_res = run_command(
-                [node_path, tsx_cli, executor_script, str(compile_ctx_file.resolve())],
-                cwd=str(KAOS_ROOT),
-                capture_output=True,
-            )
-
-            compile_output = {}
-            try:
-                compile_output = json.loads(compile_res.stdout.strip())
-            except Exception:
-                pass
-
-            compile_passed = compile_output.get("success", False)
-
-            if not compile_passed:
-                compile_stderr = compile_output.get("stderr", "")
-                compile_stdout = compile_output.get("stdout", "")
-                compile_error = compile_output.get("error", "")
-
-                raw_tsc_output = (
-                    (compile_stderr or "") + "\n" + (compile_stdout or "") + "\n" + (compile_error or "")
-                )
-                tsc_lines = [l for l in raw_tsc_output.split("\n") if l.strip()] if raw_tsc_output.strip() else []
-                tsc_errors_filtered = [
-                    l for l in tsc_lines
-                    if "error TS" in l or "Cannot find module" in l or "is not a module" in l
-                ]
-                if not tsc_errors_filtered:
-                    tsc_errors_filtered = tsc_lines[:30]
-
-                tsc_errors_str = "\n".join(tsc_errors_filtered[:30])
-                logger.warning(f"      ❌ [Gatekeeper] Compile FAILED")
-                if tsc_errors_str:
-                    logger.warning(f"         Errors:\n{tsc_errors_str}")
-                success = False
-                feedback_msg = (
-                    f"[Gatekeeper] TypeScript compilation FAILED for module {task.module}.\n"
-                    f"Errors:\n{tsc_errors_str}\n\n"
-                    f"[HOW TO FIX]:\n"
-                    f"- 'Cannot find module' means imports point to non-existent files.\n"
-                    f"- Use `grep` to find old import paths and fix them.\n"
-                    f"- Verify module directory has all required files (entities, services, controllers, module.ts)."
-                )
-                continue
-
-            logger.info(f"      ✅ [Gatekeeper] Compile PASSED")
-
-            # --- GATEKEEPER: TEST SUITE ---
-            logger.info(f"      └─ [Gatekeeper] Running tests...")
-            test_ctx = {"action": "test", "module": task.module}
-            test_ctx_file = self.tmp_dir / f"test_ctx_{task.task_id}.json"
-            with open(test_ctx_file, "w") as f:
-                json.dump(test_ctx, f)
-
-            test_res = run_command(
-                [node_path, tsx_cli, executor_script, str(test_ctx_file.resolve())],
-                cwd=str(KAOS_ROOT),
-                capture_output=True,
-            )
-
-            test_output = {}
-            try:
-                test_output = json.loads(test_res.stdout.strip())
-            except Exception:
-                pass
-
-            test_passed = test_output.get("success", False)
-
-            if test_passed:
-                logger.info(f"      ✅ [Gatekeeper] Tests PASSED")
-                success = True
-            else:
-                err_msg = test_output.get("error", "Test execution error")
-                logger.warning(f"      ❌ [Gatekeeper] Tests FAILED")
-                logger.warning(f"         Error: {str(err_msg)[:200]}")
-                success = False
-                feedback_msg = (
-                    f"[Gatekeeper] Test suite failed for module {task.module}.\n"
-                    f"Error: {err_msg[:500]}"
-                )
-
-            # Append evaluator feedback if any
-            if eval_out_file.exists() and not success:
-                try:
-                    eval_result = json.loads(eval_out_file.read_text())
                     issues = eval_result.get("issues", [])
                     if issues:
                         lines = ["Evaluator issues:"]
                         for issue in issues:
                             lines.append(
-                                f"- [{issue.get('severity','INFO')}] {issue.get('field','')}: "
-                                f"{issue.get('message','')}"
+                                f"- [{issue.get('severity', 'INFO')}] {issue.get('field', '')}: "
+                                f"{issue.get('message', '')}"
                             )
                             sug = issue.get("suggestion", "")
                             if sug:
@@ -692,23 +689,313 @@ class TaskQueueEngine:
                 except Exception:
                     pass
 
-            if feedback_msg and attempts < max_retries:
-                fb_file = self.tmp_dir / f"feedback_{task.task_id}.json"
-                with open(fb_file, "w") as f:
-                    json.dump({"attempt": attempts, "task_id": task.task_id, "feedback": feedback_msg}, f)
+            return EvalResult(verdict=verdict, feedback_msg=feedback_msg)
+        except Exception as e:
+            logger.warning(f"      ⚠️ Evaluator exception: {e}")
+            return EvalResult(verdict="PASS", feedback_msg="")
 
-        if not success:
-            logger.error(f"   ⛔ Task {task.task_id} failed after {max_retries} attempts.")
+    # ────────────── 4d. GATEKEEPER COMPILE HELPER ────────────────
+
+    async def _run_gatekeeper_compile(
+        self,
+        task: Task,
+        attempt: int,
+        baseline: Optional[dict] = None,
+    ) -> CompileResult:
+        """TypeScript compilation check via Gatekeeper port. Returns CompileResult."""
+        logger.info(f"   🛡️  [Gatekeeper] TypeScript compilation check...")
+        try:
+            compile_passed, compile_err = await self.gatekeeper.compile_check(
+                task.module,
+                f"{task.task_id}_a{attempt}",
+            )
+
+            if compile_passed:
+                return CompileResult(passed=True)
+
+            # Filter baseline errors (pre-existing, not caused by this task)
+            if baseline:
+                has_new, new_errors = self._is_new_error(compile_err, baseline)
+                if not has_new:
+                    logger.info(f"      ℹ️ Compile errors are all pre-existing — ignoring")
+                    return CompileResult(passed=True)
+                logger.warning(f"      ❌ Compile has NEW errors ({new_errors[:100]}...)")
+                return CompileResult(passed=False, new_errors=new_errors)
+
+            logger.warning(f"      ❌ Compile failed: {compile_err[:120]}...")
+            return CompileResult(passed=False, new_errors=compile_err)
+        except Exception as e:
+            logger.error(f"      ❌ Exception during compile check: {e}")
+            return CompileResult(passed=False, new_errors=str(e))
+
+    # ────────────── 4e. GATEKEEPER TEST HELPER ──────────────────
+
+    async def _run_gatekeeper_test(
+        self,
+        task: Task,
+        attempt: int,
+    ) -> TestResult:
+        """Run test suite via Gatekeeper port. Returns TestResult."""
+        logger.info(f"      └─ [Gatekeeper] Running tests...")
+        try:
+            passed, err_msg = await self.gatekeeper.run_tests(
+                task.module,
+                f"{task.task_id}_a{attempt}",
+            )
+
+            if passed:
+                logger.info(f"      ✅ [Gatekeeper] Tests PASSED")
+                return TestResult(passed=True)
+            else:
+                logger.warning(f"      ❌ [Gatekeeper] Tests FAILED")
+                logger.warning(f"         Error: {str(err_msg)[:200]}")
+                return TestResult(passed=False, error=err_msg)
+        except Exception as e:
+            logger.error(f"      ❌ Exception during test execution: {e}")
+            return TestResult(passed=False, error=str(e))
+
+    # ────────────── 4f. BASELINE ERROR FILTER ───────────────────
+
+    @staticmethod
+    def _is_new_error(
+        compile_errors_str: str,
+        baseline: Optional[Dict[str, Any]],
+    ) -> Tuple[bool, str]:
+        """
+        Compare compile errors with baseline.
+        Returns True only if there are NEW errors (not in baseline).
+        Returns: (has_new_errors, new_errors_str)
+        """
+        if not baseline or not baseline.get("error_lines"):
+            if compile_errors_str:
+                return True, compile_errors_str
+            return False, ""
+
+        baseline_lines = baseline["error_lines"]
+        new_lines = []
+        for line in compile_errors_str.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            normalized = re.sub(r'\(\d+,\d+\)', '', line).strip()
+            if normalized not in baseline_lines:
+                new_lines.append(line)
+        if new_lines:
+            return True, "\n".join(new_lines)
+        return False, ""
+
+    # ────────────── 4g. FEEDBACK LOOP ───────────────────────────
+
+    async def _feedback_loop(
+        self,
+        task: Task,
+        baseline: Optional[dict],
+        tactical_plan: str,
+    ) -> dict:
+        """
+        Orchestrate the AutoFixer + Escalation feedback loop.
+        Returns a result dict with keys: success, attempts, fix_attempts, escalated,
+        files_created, files_modified, error.
+        """
+        # Resolve initial budget from task (ActTask) or derive it
+        from kaos.application.use_cases.act_executor import FixAttempt
+
+        if hasattr(task, "budget") and task.budget:
+            budget = task.budget
+        else:
+            budget = TaskBudget.from_task_description(task.task_id, task.description)
+
+        skill_file = self._select_skill_file(task.title)
+        ctx_file = self.tmp_dir / f"act_ctx_{task.task_id}.json"
+
+        files_created: List[str] = []
+        files_modified: List[str] = []
+        attempt_count = 0
+        fix_attempts: list[FixAttempt] = []
+        escalated = False
+        error_msg = ""
+
+        def _build_result(
+            success_: bool,
+        ) -> dict:
+            return {
+                "success": success_,
+                "attempts": attempt_count,
+                "fix_attempts": fix_attempts,
+                "escalated": escalated,
+                "files_created": files_created,
+                "files_modified": files_modified,
+                "error": error_msg if not success_ else "",
+            }
+
+        async def _run_full_cycle(
+            attempt: int,
+            budget_: TaskBudget,
+            feedback: str,
+        ) -> bool:
+            """Run one full Code → Eval → Compile → Test cycle. Returns True if all pass."""
+            nonlocal files_created, files_modified, error_msg
+
+            coder_res = await self._run_coder(
+                task=task,
+                ctx_file=ctx_file,
+                skill_file=skill_file,
+                tactical_plan=tactical_plan,
+                attempt=attempt,
+                feedback_msg=feedback,
+                budget=budget_,
+            )
+            if not coder_res.success:
+                error_msg = coder_res.error_msg or "Coder agent failed"
+                return False
+
+            if coder_res.files_created:
+                files_created = coder_res.files_created
+            if coder_res.files_modified:
+                files_modified = coder_res.files_modified
+
+            # Evaluator
+            eval_res = await self._run_evaluator(task, ctx_file, files_created, files_modified)
+            if eval_res.verdict != "PASS":
+                error_msg = eval_res.feedback_msg or "Evaluator rejected changes"
+                return False
+
+            # Gatekeeper compile
+            compile_res = await self._run_gatekeeper_compile(task, attempt, baseline)
+            if not compile_res.passed:
+                error_msg = compile_res.new_errors or "Compilation failed"
+                return False
+
+            # Gatekeeper test
+            test_res = await self._run_gatekeeper_test(task, attempt)
+            if not test_res.passed:
+                error_msg = test_res.error or "Tests failed"
+                return False
+
+            return True
+
+        # ── First attempt ──
+        attempt_count += 1
+        first_ok = await _run_full_cycle(attempt_count, budget, "")
+        if first_ok:
+            logger.info(f"   ✅ [{task.task_id}] Passed on first attempt")
+            return _build_result(True)
+
+        # ── AutoFixer attempts ──
+        max_fix = self.feedback_policy.max_fix_attempts
+        fix_turns = self.feedback_policy.fix_turns_per_attempt
+
+        if max_fix > 0:
+            logger.info(f"   🔧 [{task.task_id}] AutoFixer: starting fix loop (max {max_fix} attempts)...")
+            feedback_msg = error_msg
+
+            for fix_i in range(1, max_fix + 1):
+                attempt_count += 1
+                logger.info(f"   🔄 [{task.task_id}] Fix attempt {fix_i}/{max_fix}")
+
+                fix_budget = TaskBudget(
+                    task_id=task.task_id,
+                    complexity=budget.complexity,
+                    max_turns=fix_turns,
+                    timeout_secs=budget.timeout_secs,
+                    max_fix_attempts=max_fix,
+                    fix_turns_per_attempt=fix_turns,
+                )
+
+                fix_ok = await _run_full_cycle(attempt_count, fix_budget, feedback_msg)
+
+                fix_attempts.append(FixAttempt(
+                    attempt_number=fix_i,
+                    error_message=error_msg,
+                    success=fix_ok,
+                ))
+
+                if fix_ok:
+                    logger.info(f"   ✅ [{task.task_id}] Fixed on attempt {fix_i}")
+                    return _build_result(True)
+
+                feedback_msg = error_msg
+
+        # ── Escalation ──
+        if self.feedback_policy.enable_escalation:
+            attempt_count += 1
+            escalated = True
+            logger.warning(
+                f"   ⚠️ [{task.task_id}] AutoFixer failed after {max_fix}. "
+                f"Escalating with {self.feedback_policy.escalate_turns}-turn coder..."
+            )
+
+            escalate_budget = TaskBudget(
+                task_id=task.task_id,
+                complexity=TaskComplexity.COMPLEX,
+                max_turns=self.feedback_policy.escalate_turns,
+                timeout_secs=budget.timeout_secs * 2,
+                max_fix_attempts=max_fix,
+                fix_turns_per_attempt=fix_turns,
+            )
+
+            esc_ok = await _run_full_cycle(
+                attempt_count,
+                escalate_budget,
+                f"FIRST ATTEMPT ERROR: {error_msg}\n\n"
+                f"THESE FIX ATTEMPTS ALSO FAILED. "
+                f"Please rewrite from scratch with a fresh approach.",
+            )
+
+            if esc_ok:
+                logger.info(f"   ✅ [{task.task_id}] Fixed after escalation")
+                return _build_result(True)
+
+        logger.error(f"   ⛔ [{task.task_id}] All attempts failed.")
+        return _build_result(False)
+
+    # ────────────── 4h. EXECUTE SINGLE TASK (simplified) ────────
+
+    async def _execute_single_task(self, session_name: str, task: Task) -> bool:
+        """
+        Execute one task: Planner → Coder → Evaluator → Gatekeeper (compile + test).
+        Delegates to helper methods; implements AutoFixer + Escalation.
+        """
+        if task.status == "SUCCESS":
+            logger.info(f"   ⏭️  [{task.task_id}] Already SUCCESS — skipping.")
+            self._stats["completed"] += 1
+            return True
+
+        logger.info(f"   ⏳  [{task.task_id}] Executing: {task.title}")
+
+        # Build context file
+        task_ctx = self._build_task_context(task)
+        task_ctx_file = self.tmp_dir / f"act_ctx_{task.task_id}.json"
+        self.storage.write_json(task_ctx_file, task_ctx)
+
+        # Planner (first-attempt only)
+        plan_file = self.tmp_dir / f"plan_{task.task_id}.json"
+        await self._run_planner(task_ctx_file, plan_file)
+
+        tactical_plan = ""
+        if plan_file.exists():
+            try:
+                plan_data = json.loads(plan_file.read_text())
+                tactical_plan = self._generate_tactical_plan(plan_data)
+            except Exception:
+                pass
+
+        # Feedback loop (AutoFixer + Escalation)
+        result = await self._feedback_loop(task, self._baseline_errors, tactical_plan)
+        task.result = result
+
+        if result.get("success", False):
+            task.status = "SUCCESS"
+            self._stats["completed"] += 1
+            self._save_queue_status()
+            logger.info(f"   ✅  [{task.task_id}] All checks PASSED")
+            return True
+        else:
             task.status = "FAILED"
             self._stats["failed"] += 1
             self._save_queue_status()
+            logger.error(f"   ⛔ Task {task.task_id} failed.")
             return False
-
-        task.status = "SUCCESS"
-        self._stats["completed"] += 1
-        self._save_queue_status()
-        logger.info(f"   ✅  [{task.task_id}] All checks PASSED")
-        return True
 
     # ────────────── 5. EXECUTE LEVEL ──────────────────────────────
 
@@ -805,28 +1092,14 @@ class TaskQueueEngine:
         if not self.queue_file or not self.queue_file.exists():
             return
         try:
-            rows = []
-            fieldnames = []
-            with open(self.queue_file, mode="r", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                fieldnames = reader.fieldnames
-                for row in reader:
-                    task_id = row.get("task_id")
-                    if task_id in self.tasks:
-                        row["status"] = self.tasks[task_id].status
-                    rows.append(row)
-
-            with open(self.queue_file, mode="w", encoding="utf-8", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames)
-                writer.writeheader()
-                writer.writerows(rows)
+            self.storage.save_queue_status(self.queue_file, self.tasks)
             logger.info(f"   💾 Updated queue status: {self.queue_file}")
         except Exception as e:
             logger.debug(f"   ⚠️ Cannot update queue CSV: {e}")
 
     # ────────────── 8. RUN ────────────────────────────────────────
 
-    def run(self, parallel_workers: int = 5, resume: bool = False) -> bool:
+    async def run(self, parallel_workers: int = 5, resume: bool = False) -> bool:
         """
         Run the full Task Queue Engine pipeline.
 
@@ -868,7 +1141,7 @@ class TaskQueueEngine:
             for level in sorted(self.level_groups.keys()):
                 tasks = self.level_groups[level]
                 try:
-                    level_success = asyncio.run(self._execute_level(level, tasks))
+                    level_success = await self._execute_level(level, tasks)
                 except Exception as e:
                     logger.error(f"Unexpected error running level {level}: {e}", exc_info=True)
                     level_success = False
@@ -911,6 +1184,10 @@ class TaskQueueEngine:
         else:
             logger.info(f"\n   ⚠️ SOME TASKS FAILED")
 
+    def run_sync(self, parallel_workers: int = 5, resume: bool = False) -> bool:
+        """Synchronous wrapper — calls run() via asyncio.run() for non-async callers."""
+        return asyncio.run(self.run(parallel_workers, resume))
+
 
 # ─── CLI Entry Point ────────────────────────────────────────────
 if __name__ == "__main__":
@@ -930,5 +1207,5 @@ if __name__ == "__main__":
         module=args.module,
         branch_name=args.branch,
     )
-    success = engine.run(parallel_workers=args.parallel, resume=args.resume)
+    success = engine.run_sync(parallel_workers=args.parallel, resume=args.resume)
     exit(0 if success else 1)

@@ -16,7 +16,6 @@ from kaos.domain.scout_results import ScoutReport
 from kaos.domain.value_objects import AgentInstruction, ExecutionConfig
 from kaos.application.ports import CachePort, GatekeeperPort, LLMProviderPort, StoragePort
 from kaos.config import Prompts, PROJECT_ROOT
-from kaos.infrastructure.adapters.synthesizer import Synthesizer
 
 logger = logging.getLogger("KAOS_Harness")
 

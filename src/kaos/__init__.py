@@ -17,8 +17,6 @@ if target_path:
 
 from .domain import Task, Workflow, DecisionRule, ProposalOption, DecisionEngine, TaskStatus, SessionMetadata, ExecutionConfig
 from .application import GitPort, StoragePort, GatekeeperPort, LLMProviderPort
-from .infrastructure import Container
-from .interfaces import main
 
 
 __all__ = [
@@ -36,8 +34,4 @@ __all__ = [
     "StoragePort",
     "GatekeeperPort",
     "LLMProviderPort",
-    # Infrastructure
-    "Container",
-    # Interfaces
-    "main",
 ]

@@ -2,6 +2,7 @@ from .git_adapter import GitCliAdapter
 from .storage_adapter import FileStorageAdapter
 from .gatekeeper_adapter import TsGatekeeperAdapter
 from .llm_adapter import GooseCliAdapter
+from .claude_code_adapter import ClaudeCodeAdapter
 from .antigravity_adapter import AntigravityAdapter
 from .cache_adapter import FileCacheAdapter
 from .synthesizer import Synthesizer, ScoutAnalyzer
@@ -11,6 +12,7 @@ __all__ = [
     "FileStorageAdapter",
     "TsGatekeeperAdapter",
     "GooseCliAdapter",
+    "ClaudeCodeAdapter",
     "AntigravityAdapter",
     "FileCacheAdapter",
     "Synthesizer",

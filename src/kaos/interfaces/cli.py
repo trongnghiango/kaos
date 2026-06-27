@@ -481,12 +481,12 @@ def main():
     parser.add_argument(
         "--llm-provider",
         dest="llm_provider",
-        choices=["goose", "antigravity"],
+        choices=["goose", "claude-code", "antigravity"],
         default=None,
         help=(
             "LLM provider được dùng để thực thi task. Mặc định đọc từ KAOS_LLM_PROVIDER env "
             "hoặc runner_config.json (fallback: 'goose'). "
-            "Ví dụ: --llm-provider antigravity"
+            "Ví dụ: --llm-provider antigravity, --llm-provider claude-code"
         ),
     )
     parser.add_argument(

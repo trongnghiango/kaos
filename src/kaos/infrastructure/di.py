@@ -31,6 +31,7 @@ from kaos.infrastructure.adapters import (
     FileStorageAdapter,
     TsGatekeeperAdapter,
     GooseCliAdapter,
+    ClaudeCodeAdapter,
     AntigravityAdapter,
     FileCacheAdapter,
 )
@@ -108,6 +109,9 @@ class Container:
         if provider_name == "goose":
             return GooseCliAdapter()
 
+        elif provider_name == "claude-code":
+            return ClaudeCodeAdapter()
+
         elif provider_name == "antigravity":
             handshake_dir = TMP_DIR / provider_cfg.get("handshake_dir", "handshake")
             poll_interval = float(provider_cfg.get("poll_interval_secs", 2.0))
@@ -119,7 +123,7 @@ class Container:
         else:
             raise ValueError(
                 f"❌ [KAOS] Unknown LLM provider: '{provider_name}'. "
-                f"Supported: 'goose', 'antigravity'. "
+                f"Supported: 'goose', 'claude-code', 'antigravity'. "
                 f"Set via --llm-provider, KAOS_LLM_PROVIDER env, or runner_config.json llm.provider"
             )
 

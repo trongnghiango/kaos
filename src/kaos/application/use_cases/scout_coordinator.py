@@ -100,6 +100,7 @@ class ScoutCoordinator:
 
         # 3. Synthesizer (pure Python, không LLM)
         logger.info("   🔗 [Synthesizer] Merging scout results...")
+        from kaos.infrastructure.adapters.synthesizer import Synthesizer
         report = Synthesizer.merge(
             schema_summary=schema_summary,
             raw_data_summary=data_summary,

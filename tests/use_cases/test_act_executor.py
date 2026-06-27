@@ -41,6 +41,39 @@ def mock_llm():
     m = AsyncMock()
     m.run_agent.return_value = (0, "ok")
     m.get_provider_name.return_value = "mock"
+
+    async def run_agent_side_effect(instruction, *args, **kwargs):
+        ret_val = m.run_agent.return_value
+        if isinstance(ret_val, tuple) and len(ret_val) > 0 and ret_val[0] != 0:
+            return ret_val
+
+        if instruction.output_file:
+            path = Path(instruction.output_file)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if "plan" in path.name:
+                data = {
+                    "step_by_step_plan": ["Step 1"],
+                    "complexity": "SIMPLE",
+                    "files_to_create": [],
+                    "files_to_modify": [],
+                    "impacted_references": []
+                }
+            elif "eval" in path.name:
+                data = {
+                    "verdict": "PASS",
+                    "issues": []
+                }
+            else:
+                data = {
+                    "success": True,
+                    "files_created": [],
+                    "files_modified": [],
+                    "summary": "Mock task complete"
+                }
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        return (0, "ok")
+
+    m.run_agent.side_effect = run_agent_side_effect
     return m
 
 
@@ -48,7 +81,19 @@ def mock_llm():
 def mock_gatekeeper():
     m = AsyncMock()
     m.compile_check.return_value = (True, "")  # compile passes by default
+    m.run_tests.return_value = (True, "")  # test passes by default
     return m
+
+
+@pytest.fixture(autouse=True)
+def mock_run_command():
+    with patch("kaos.engine.task_queue_engine.run_command") as m:
+        class MockCompletedProcess:
+            returncode = 0
+            stdout = "mocked stdout"
+            stderr = ""
+        m.return_value = MockCompletedProcess()
+        yield m
 
 
 @pytest.fixture

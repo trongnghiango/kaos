@@ -521,6 +521,7 @@ class TaskQueueEngine:
                     plan_instruction,
                     timeout=float(TIMEOUT_SECS_PLANNER),
                     skill_name="cli-backend",
+                    output_file=str(plan_file),
                 )
             )
             if exit_code == 0 and plan_file.exists():
@@ -593,6 +594,7 @@ class TaskQueueEngine:
                     instruction,
                     timeout=float(budget.timeout_secs),
                     skill_name=skill_file.replace(".md", ""),
+                    output_file=str(out_file),
                     max_turns=budget.max_turns,
                 )
             )
@@ -665,6 +667,7 @@ class TaskQueueEngine:
                     eval_instruction,
                     timeout=float(TIMEOUT_SECS_PLANNER),
                     skill_name="cli-review",
+                    output_file=str(eval_out_file),
                 )
             )
 
@@ -1020,13 +1023,15 @@ class TaskQueueEngine:
                 all_passed = False
             elif not result:
                 task.status = "FAILED"
-                task.result = {"success": False}
-                self._stats["failed"] += 1
+                if not task.result or not isinstance(task.result, dict):
+                    task.result = {"success": False}
                 all_passed = False
             else:
-                task.status = "COMPLETED"
-                task.result = {"success": True}
-                self._stats["completed"] += 1
+                if task.status not in ("SUCCESS", "COMPLETED"):
+                    task.status = "COMPLETED"
+                if not task.result or not isinstance(task.result, dict):
+                    task.result = {"success": True}
+                all_passed = True
 
         self.execution_log.append({
             "level": level,

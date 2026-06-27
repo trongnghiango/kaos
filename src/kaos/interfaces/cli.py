@@ -533,7 +533,11 @@ def main():
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
         choices=["goose", "claude-code", "antigravity"],
+=======
+        choices=["goose", "antigravity", "claude-code"],
+>>>>>>> Stashed changes
 =======
         choices=["goose", "antigravity", "claude-code"],
 >>>>>>> Stashed changes

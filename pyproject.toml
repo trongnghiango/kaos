@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kaos-cli"
-version = "1.0.0"
+version = "1.1.0"
 description = "KAOS: Knowledge-Augmented Organization System - Standalone AI Task Orchestrator"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["redis>=4.4.0"]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio"]

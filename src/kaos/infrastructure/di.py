@@ -11,7 +11,7 @@ from pathlib import Path
 # Domain models/configs
 from kaos.domain.value_objects import ExecutionConfig, SessionMetadata
 # Application Ports
-from kaos.application.ports import CachePort, GitPort, StoragePort, GatekeeperPort, LLMProviderPort
+from kaos.application.ports import CachePort, GitPort, StoragePort, GatekeeperPort, LLMProviderPort, KnowledgeGraphPort
 # Application Use Cases
 from kaos.application.use_cases import (
     ExtractSchemaUseCase,
@@ -35,6 +35,7 @@ from kaos.infrastructure.adapters import (
     AntigravityAdapter,
     ClaudeCodeAdapter,
     FileCacheAdapter,
+    RedisGraphAdapter,
 )
 
 # Thống nhất constants từ config.py hiện hành
@@ -90,6 +91,7 @@ class Container:
         self.git_adapter = GitCliAdapter()
         self.storage_adapter = FileStorageAdapter()
         self.gatekeeper_adapter = TsGatekeeperAdapter()
+        self.knowledge_graph = RedisGraphAdapter()
 
         # 3. Chọn LLM provider theo priority chain:
         #    CLI arg > ENV var > runner_config.json > default "goose"
@@ -211,6 +213,7 @@ class Container:
             config=self.config,
             tmp_dir=self.tmp_dir,
             target_path=resolved_target,
+            knowledge_graph=self.knowledge_graph,
         )
 
     def resolve_git_auto_manager(self, target_path: str = "") -> GitAutoManager:

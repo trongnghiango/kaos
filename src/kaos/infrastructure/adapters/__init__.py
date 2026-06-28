@@ -5,6 +5,7 @@ from .llm_adapter import GooseCliAdapter
 from .claude_code_adapter import ClaudeCodeAdapter
 from .antigravity_adapter import AntigravityAdapter
 from .cache_adapter import FileCacheAdapter
+from .redis_graph_adapter import RedisGraphAdapter
 from .synthesizer import Synthesizer, ScoutAnalyzer
 
 __all__ = [
@@ -15,6 +16,7 @@ __all__ = [
     "ClaudeCodeAdapter",
     "AntigravityAdapter",
     "FileCacheAdapter",
+    "RedisGraphAdapter",
     "Synthesizer",
     "ScoutAnalyzer",
 ]

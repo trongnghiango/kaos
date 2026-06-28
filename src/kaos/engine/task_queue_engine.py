@@ -44,7 +44,7 @@ from kaos.domain.scout_results import (
 )
 from kaos.domain.value_objects import AgentInstruction
 from kaos.engine.execution_policy import FeedbackPolicy
-from kaos.application.ports import LLMProviderPort, GatekeeperPort, StoragePort
+from kaos.application.ports import LLMProviderPort, GatekeeperPort, StoragePort, KnowledgeGraphPort
 from kaos.domain.models import Task, DecisionEngine, DecisionRule
 
 # Import Sandbox Facade — fallback an toàn
@@ -132,6 +132,7 @@ class TaskQueueEngine:
         llm_provider: Optional[LLMProviderPort] = None,
         gatekeeper: Optional[GatekeeperPort] = None,
         storage: Optional[StoragePort] = None,
+        knowledge_graph: Optional[KnowledgeGraphPort] = None,
         feedback_policy: Optional[FeedbackPolicy] = None,
         classify_error: Optional[Any] = None,
     ):
@@ -152,6 +153,7 @@ class TaskQueueEngine:
         self.llm_provider = self._resolve_llm_provider(llm_provider)
         self.gatekeeper = self._resolve_gatekeeper(gatekeeper)
         self.storage = self._resolve_storage(storage)
+        self.knowledge_graph = self._resolve_knowledge_graph(knowledge_graph)
         self.feedback_policy = self._resolve_feedback_policy(feedback_policy)
 
         # Cấu hình DecisionEngine cho Architecture checks
@@ -178,6 +180,12 @@ class TaskQueueEngine:
             return st
         from kaos.infrastructure.adapters.storage_adapter import FileStorageAdapter
         return FileStorageAdapter()
+
+    def _resolve_knowledge_graph(self, kg: Optional[KnowledgeGraphPort]) -> KnowledgeGraphPort:
+        if kg is not None:
+            return kg
+        from kaos.infrastructure.adapters.redis_graph_adapter import RedisGraphAdapter
+        return RedisGraphAdapter()
 
     def _resolve_feedback_policy(self, fp: Optional[FeedbackPolicy]) -> FeedbackPolicy:
         return fp if fp is not None else FeedbackPolicy()
@@ -342,8 +350,42 @@ class TaskQueueEngine:
 
     # ────────────── 2. TOPOLOGICAL SORT ───────────────────────────
 
-    def _calculate_levels(self) -> None:
-        """Topological sort: assign each task a level based on dependency depth."""
+    async def _calculate_levels(self) -> None:
+        """Topological sort using Knowledge Graph when possible.
+
+        - Prefer graph‑based level calculation (fast, single source of truth).
+        - Fallback to original in‑memory algorithm if graph unavailable or fails.
+        """
+        # Clear any previous level groups
+        self.level_groups.clear()
+
+        # ---------- 1️⃣ Try graph‑based calculation ----------
+        if self.knowledge_graph is not None:
+            try:
+                levels_data = await self.knowledge_graph.calculate_levels()
+                levels = levels_data.get("levels", {})
+                for lvl, tids in levels.items():
+                    level_tasks = []
+                    for tid in tids:
+                        task = self.tasks.get(tid)
+                        if task:
+                            task.level = lvl
+                            task.status = "PENDING"
+                            level_tasks.append(task)
+                    if level_tasks:
+                        self.level_groups[lvl] = level_tasks
+
+                logger.info(
+                    f"📐 [DAG‑Graph] Sorted {len(self.tasks)} tasks into {len(self.level_groups)} levels via Knowledge Graph"
+                )
+                for level, tasks in sorted(self.level_groups.items()):
+                    names = ", ".join(f"{t.task_id}({t.module})" for t in tasks)
+                    logger.info(f"   Level {level} (graph): {names}")
+                return
+            except Exception as exc:
+                logger.warning(f"🔧 Graph‑based level calculation failed, falling back to in‑memory: {exc}")
+
+        # ---------- 2️⃣ Fallback: original Python algorithm ----------
         graph: Dict[str, List[str]] = {tid: [] for tid in self.tasks}
         in_degree: Dict[str, int] = {tid: 0 for tid in self.tasks}
 
@@ -420,7 +462,7 @@ class TaskQueueEngine:
                         for neighbor in graph[tid]:
                             in_degree[neighbor] -= 1
                             if in_degree[neighbor] == 0:
-                                next_queue.append(neighbor)
+                                优质_queue.append(neighbor) # (Wait, let's keep name 'next_queue')
 
                     queue = next_queue
                     current_level += 1
@@ -469,6 +511,102 @@ class TaskQueueEngine:
             f"- Files to modify: {', '.join(plan_data.get('files_to_modify', []))}\n"
             f"- Impacted references: {', '.join(plan_data.get('impacted_references', []))}\n"
             f"- Steps:\n{steps}"
+        )
+
+    # ── Knowledge Graph Integration ──────────────────────────────────
+
+    async def _upsert_attempt(self, task_id: str, attempt: int,
+                              success: bool, files_created: list,
+                              files_modified: list, error_msg: str,
+                              feedback_msg: str = "") -> None:
+        """
+        Save attempt as Result (Quả) + feedback Condition (Duyên động) into RedisGraph.
+        Mỗi attempt tạo một result_id duy nhất: R_{task_id}_{attempt}.
+        Nếu có feedback (từ attempt trước), lưu thành Condition kiểu "feedback" và
+        link qua edge MUTATES từ Result.
+        """
+        kg = self.knowledge_graph
+        if kg is None:
+            return
+
+        result_id = f"R_{task_id}_{attempt}"
+
+        await kg.upsert_result(
+            result_id=result_id,
+            task_id=task_id,
+            success=success,
+            files_created=files_created,
+            files_modified=files_modified,
+            error_message=error_msg,
+            attempt=attempt,
+        )
+
+        # Nếu attempt này nhận feedback (từ lần trước), lưu nó như là
+        # Duyên động và link Result → Condition via MUTATES
+        if feedback_msg:
+            cond_id = f"fb_{task_id}_{attempt}"
+            await kg.upsert_condition(
+                cond_id, "feedback",
+                feedback_msg[:2000],  # truncate to safe size
+            )
+            await kg.link_result_condition(result_id, cond_id)
+
+            # Cũng link Condition này vào Task (Duyên động ảnh hưởng)
+            await kg.link_task_condition(task_id, cond_id)
+
+    async def _upsert_task_context(self, task: Task, ctx: Dict[str, Any]) -> None:
+        """
+        Upsert Task (Nhân) + Conditions (Duyên) + Dependencies (DEPENDS_ON)
+        vào đồ thị Nhân-Duyên-Quả trên RedisGraph (qua KnowledgeGraphPort).
+        Giữ nguyên file-based để LLM provider vẫn đọc được.
+        """
+        kg = self.knowledge_graph
+        if kg is None:
+            return
+
+        # 1. Upsert Task node
+        await kg.upsert_task(
+            task_id=task.task_id,
+            title=task.title,
+            description=task.description,
+            module=task.module,
+            complexity=ctx.get("complexity", "MEDIUM"),
+            status=task.status,
+        )
+
+        # 2. Upsert static Conditions (Duyên tĩnh) — skill, schema, spec
+        #    Skill type derived from title
+        skill_type = self._select_skill_file(task.title).replace(".md", "")
+        skill_cond_id = f"skill_{skill_type}"
+        await kg.upsert_condition(
+            skill_cond_id, "skill", skill_type,
+            hash_val=task.module,
+        )
+        await kg.link_task_condition(task.task_id, skill_cond_id)
+
+        # Schema summary from report (if available)
+        if ctx.get("schema_summary"):
+            schema_cond_id = f"schema_{task.task_id}"
+            await kg.upsert_condition(
+                schema_cond_id, "schema", ctx["schema_summary"],
+            )
+            await kg.link_task_condition(task.task_id, schema_cond_id)
+
+        # Spec / description as dynamic condition
+        spec_cond_id = f"desc_{task.task_id}"
+        await kg.upsert_condition(
+            spec_cond_id, "spec", task.description[:500],
+        )
+        await kg.link_task_condition(task.task_id, spec_cond_id)
+
+        # 3. Link dependencies (DEPENDS_ON edges)
+        for dep_id in task.depends_on:
+            if dep_id in self.tasks:
+                await kg.link_task_dependency(dep_id, task.task_id)
+
+        logger.debug(
+            f"   [KG] Upserted task '{task.task_id}' with "
+            f"{len(task.depends_on)} dependencies & 3 conditions"
         )
 
     # ── Task Context Builder ─────────────────────────────────────────
@@ -972,7 +1110,28 @@ class TaskQueueEngine:
         first_ok, failed_stage, raw_error = await _run_full_cycle(attempt_count, budget, "")
         if first_ok:
             logger.info(f"   ✅ [{task.task_id}] Passed on first attempt")
+            # Persist successful first attempt in Knowledge Graph
+            await self._upsert_attempt(
+                task_id=task.task_id,
+                attempt=attempt_count,
+                success=True,
+                files_created=files_created,
+                files_modified=files_modified,
+                error_msg="",
+                feedback_msg="",
+            )
             return _build_result(True)
+
+        # Persist failed first attempt in Knowledge Graph
+        await self._upsert_attempt(
+            task_id=task.task_id,
+            attempt=attempt_count,
+            success=False,
+            files_created=files_created,
+            files_modified=files_modified,
+            error_msg=raw_error,
+            feedback_msg="",
+        )
 
         max_fix = self.feedback_policy.max_fix_attempts
         fix_turns = self.feedback_policy.fix_turns_per_attempt
@@ -999,6 +1158,17 @@ class TaskQueueEngine:
                 )
 
                 fix_ok, failed_stage, raw_error = await _run_full_cycle(attempt_count, fix_budget, feedback_msg)
+
+                # Persist fix attempt in Knowledge Graph
+                await self._upsert_attempt(
+                    task_id=task.task_id,
+                    attempt=attempt_count,
+                    success=fix_ok,
+                    files_created=files_created,
+                    files_modified=files_modified,
+                    error_msg=raw_error if not fix_ok else "",
+                    feedback_msg=feedback_msg,  # Duyên động: phản hồi từ attempt trước
+                )
 
                 fix_attempts.append(FixAttempt(
                     attempt_number=fix_i,
@@ -1041,6 +1211,17 @@ class TaskQueueEngine:
                 f"Please rewrite from scratch with a fresh approach.",
             )
 
+            # Persist escalation attempt in Knowledge Graph
+            await self._upsert_attempt(
+                task_id=task.task_id,
+                attempt=attempt_count,
+                success=esc_ok,
+                files_created=files_created,
+                files_modified=files_modified,
+                error_msg=raw_error if not esc_ok else "",
+                feedback_msg=error_msg,  # tổng hợp lỗi từ các attempt trước
+            )
+
             if esc_ok:
                 logger.info(f"   ✅ [{task.task_id}] Fixed after escalation")
                 return _build_result(True)
@@ -1065,10 +1246,13 @@ class TaskQueueEngine:
 
         logger.info(f"   ⏳  [{task.task_id}] Executing: {task.title}")
 
-        # Build context file
+        # Build context file (file-based, backward compat)
         task_ctx = self._build_task_context(task)
         task_ctx_file = self.tmp_dir / f"act_ctx_{task.task_id}.json"
         self.storage.write_json(task_ctx_file, task_ctx)
+
+        # Upsert into Knowledge Graph (Nhân-Duyên-Quả)
+        await self._upsert_task_context(task, task_ctx)
 
         # Planner (first-attempt only)
         plan_file = self.tmp_dir / f"plan_{task.task_id}.json"
@@ -1243,7 +1427,7 @@ class TaskQueueEngine:
 
         try:
             self.load(resume=resume)
-            self._calculate_levels()
+            await self._calculate_levels()
 
             success = True
             for level in sorted(self.level_groups.keys()):

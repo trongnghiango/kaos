@@ -150,6 +150,92 @@ class LLMProviderPort(ABC):
         pass
 
 
+class KnowledgeGraphPort(ABC):
+    """
+    Port quản lý Đồ thị Nhân-Duyên-Quả (Causal Graph) trên RedisGraph.
+    Cho phép lưu trữ, truy vấn và trực quan hóa trạng thái thực thi của toàn bộ session.
+    """
+
+    @abstractmethod
+    async def upsert_task(self, task_id: str, title: str = "", description: str = "",
+                          module: str = "", complexity: str = "MEDIUM",
+                          status: str = "PENDING") -> bool:
+        """Tạo hoặc cập nhật một :Task node (Nhân)."""
+        pass
+
+    @abstractmethod
+    async def upsert_condition(self, cond_id: str, cond_type: str, content: str,
+                               hash_val: str = "") -> str:
+        """Tạo hoặc cập nhật một :Condition node (Duyên). Trả về cond_id."""
+        pass
+
+    @abstractmethod
+    async def upsert_result(self, result_id: str, task_id: str, success: bool,
+                            files_created: list, files_modified: list,
+                            error_message: str = "", attempt: int = 1) -> str:
+        """Tạo một :Result node (Quả) và liên kết với Task qua edge :PRODUCES."""
+        pass
+
+    @abstractmethod
+    async def link_task_condition(self, task_id: str, cond_id: str) -> bool:
+        """Tạo edge REQUIRES giữa Task và Condition."""
+        pass
+
+    @abstractmethod
+    async def link_result_condition(self, result_id: str, cond_id: str) -> bool:
+        """Tạo edge MUTATES giữa Result và Condition."""
+        pass
+
+    @abstractmethod
+    async def link_task_dependency(self, parent_id: str, child_id: str) -> bool:
+        """Tạo edge DEPENDS_ON giữa các Task (child phụ thuộc parent)."""
+        pass
+
+    @abstractmethod
+    async def get_task(self, task_id: str) -> Optional[dict]:
+        """Lấy thông tin một Task node."""
+        pass
+
+    @abstractmethod
+    async def get_task_results(self, task_id: str) -> list:
+        """Lấy tất cả Result nodes của một Task, sắp xếp theo attempt."""
+        pass
+
+    @abstractmethod
+    async def get_conditions_by_type(self, cond_type: str) -> list:
+        """Lấy tất cả Condition nodes theo loại (schema, skill, config, feedback)."""
+        pass
+
+    @abstractmethod
+    async def get_task_dependencies(self, task_id: str) -> list:
+        """Lấy danh sách task_id mà task hiện tại phụ thuộc vào (DEPENDS_ON)."""
+        pass
+
+    @abstractmethod
+    async def calculate_levels(self) -> dict:
+        """Tính topological levels của tất cả Task dựa trên DEPENDS_ON."""
+        pass
+
+    @abstractmethod
+    async def get_all_tasks(self) -> list:
+        """Lấy tất cả Task nodes (dùng cho visualisation)."""
+        pass
+
+    @abstractmethod
+    async def get_last_latest_result(self, task_id: str) -> Optional[dict]:
+        """Lấy Result node mới nhất của một Task (attempt cao nhất)."""
+        pass
+
+    @abstractmethod
+    async def delete_graph(self) -> bool:
+        """Xóa toàn bộ graph (reset session)."""
+        pass
+
+    @abstractmethod
+    async def get_graph_stats(self) -> dict:
+        """Thống kê số lượng nodes/edges trong graph."""
+        pass
+
 class CachePort(ABC):
     """Port cho caching layer — lưu trữ kết quả phân tích để tái sử dụng."""
 

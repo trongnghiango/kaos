@@ -1,0 +1,4 @@
+Metric,File-Based,RedisGraph,Improvement
+Speed (s),0.05028,0.18919,0.27x
+Peak Memory (KB),351.15,68.47,282.68 KB saved
+Disk I/O (KB),3.37,0.00,100% saved

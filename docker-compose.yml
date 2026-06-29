@@ -1,7 +1,7 @@
 version: "3.9"
 services:
   redis-stack:
-    image: redis/redis-stack-server:7.2.0-v12
+    image: redis/redis-stack:7.2.0-v12
     container_name: kaos-redis
     restart: unless-stopped
     ports:

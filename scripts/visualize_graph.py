@@ -129,8 +129,6 @@ def generate_visualization():
     for cond_id, data in conditions.items():
         ctype = data.get("type", "unknown")
         content = data.get("content", "")
-        # Rút gọn content hiển thị
-        short_content = content[:50] + "..." if len(content) > 50 else content
         nodes_list.append({
             "id": cond_id,
             "label": f"Cond: {ctype}\n({cond_id})",
@@ -160,13 +158,13 @@ def generate_visualization():
         })
 
     # 5. Sinh mã HTML chứa thư viện Vis.js để render Đồ thị tương tác
-    html_template = f"""<!DOCTYPE html>
+    html_template = """<!DOCTYPE html>
 <html>
 <head>
     <title>KAOS Nhân-Duyên-Quả Graph Visualizer</title>
     <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
     <style type="text/css">
-        body {{
+        body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
             margin: 0;
             padding: 0;
@@ -174,8 +172,8 @@ def generate_visualization():
             display: flex;
             flex-direction: column;
             height: 100vh;
-        }}
-        #header {{
+        }
+        #header {
             background-color: #0f172a;
             color: white;
             padding: 12px 24px;
@@ -183,45 +181,45 @@ def generate_visualization():
             justify-content: space-between;
             align-items: center;
             box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
-        }}
-        #header h1 {{
+        }
+        #header h1 {
             margin: 0;
             font-size: 20px;
             font-weight: 700;
-        }}
-        #legend {{
+        }
+        #legend {
             display: flex;
             gap: 15px;
             font-size: 13px;
-        }}
-        .legend-item {{
+        }
+        .legend-item {
             display: flex;
             align-items: center;
             gap: 6px;
-        }}
-        .dot {{
+        }
+        .dot {
             width: 12px;
             height: 12px;
             border-radius: 3px;
-        }}
-        #container {{
+        }
+        #container {
             flex-grow: 1;
             position: relative;
-        }}
-        #mynetwork {{
+        }
+        #mynetwork {
             width: 100%;
             height: 100%;
             border: none;
             background-color: #ffffff;
         }}
-        #footer {{
+        #footer {
             background-color: #f1f5f9;
             padding: 8px 24px;
             font-size: 12px;
             color: #64748b;
             text-align: center;
             border-top: 1px solid #e2e8f0;
-        }}
+        }
     </style>
 </head>
 <body>
@@ -241,57 +239,75 @@ def generate_visualization():
     </div>
 
     <div id="footer">
-        Dữ liệu kết nối trực tiếp từ Redis (Port: {redis_port}). Click đúp để zoom, di chuột qua Node để xem chi tiết JSON.
+        Dữ liệu kết nối trực tiếp từ Redis (Port: __REDIS_PORT__). Click đúp để zoom, di chuột qua Node để xem chi tiết JSON.
     </div>
 
     <script type="text/javascript">
         // Data parsed from python
-        const nodes = new vis.DataSet({json.dumps(nodes_list)});
-        const edges = new vis.DataSet({json.dumps(edges_list)});
+        const nodes = new vis.DataSet(__NODES_DATA__);
+        const edges = new vis.DataSet(__EDGES_DATA__);
 
         // create a network
         const container = document.getElementById('mynetwork');
-        const data = {{
+        const data = {
             nodes: nodes,
             edges: edges
-        }};
-        const options = {{
-            nodes: {{
-                font: {{
+        };
+        const options = {
+            nodes: {
+                font: {
                     size: 13,
                     face: 'sans-serif'
-                }}
-            }},
-            edges: {{
+                }
+            },
+            edges: {
                 width: 2,
-                font: {{
+                font: {
                     size: 11,
                     align: 'middle'
-                }},
-                smooth: {{
+                },
+                smooth: {
                     type: 'cubicBezier',
                     forceDirection: 'none',
                     roundness: 0.5
-                }}
-            }},
-            physics: {{
-                forceAtlas2Based: {{
-                    gravitationalConstant: -50,
-                    centralGravity: 0.01,
-                    springLength: 100,
-                    springConstant: 0.08
-                }},
-                maxVelocity: 50,
-                solver: 'forceAtlas2Based',
-                timestep: 0.35,
-                stabilization: {{ iterations: 150 }}
-            }}
-        }};
+                }
+            },
+            physics: {
+                enabled: true,
+                solver: 'barnesHut',
+                barnesHut: {
+                    gravitationalConstant: -2000,
+                    centralGravity: 0.3,
+                    springLength: 95,
+                    springConstant: 0.04,
+                    damping: 0.09,
+                    avoidOverlap: 1
+                },
+                stabilization: {
+                    enabled: true,
+                    iterations: 1000,
+                    updateInterval: 100,
+                    onlyDynamicEdges: false,
+                    fit: true
+                }
+            }
+        };
         const network = new vis.Network(container, data, options);
+
+        // Dừng physics sau khi đồ thị đã ổn định để tránh chạy liên tục và giật màn hình
+        network.on("stabilizationIterationsDone", function () {
+            network.setOptions({ physics: false });
+            console.log("Graph stabilized. Physics disabled.");
+        });
     </script>
 </body>
 </html>
 """
+
+    # Thực hiện thay thế các placeholders
+    html_template = html_template.replace("__REDIS_PORT__", str(redis_port))
+    html_template = html_template.replace("__NODES_DATA__", json.dumps(nodes_list))
+    html_template = html_template.replace("__EDGES_DATA__", json.dumps(edges_list))
 
     output_path = Path(__file__).parent.parent / "graph_visualizer.html"
     with open(output_path, "w", encoding="utf-8") as f:

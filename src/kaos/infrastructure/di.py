@@ -322,9 +322,52 @@ class Container:
             except Exception as e:
                 await self.telegram.send_message(f"❌ Lỗi lấy branch: {e}")
 
+        async def cmd_resolve(chat_id: str, args: str):
+            action = args.strip().lower()
+            if action != "auto_fix":
+                await self.telegram.send_message("❓ Sử dụng: `/resolve auto_fix` để tự động giải quyết xung đột Git bằng LLM.")
+                return
+
+            try:
+                conflict_files = await self.git_adapter.get_conflict_files()
+                if not conflict_files:
+                    await self.telegram.send_message("✅ *Git Resolve*: Workspace hiện không có xung đột (conflict) nào.")
+                    return
+
+                await self.telegram.send_message(
+                    f"🧠 *Git Resolve*: Phát hiện {len(conflict_files)} file bị xung đột:\n"
+                    + "\n".join([f"• `{f}`" for f in conflict_files])
+                    + "\n\nĐang kích hoạt LLM Agent để phân tích và merge tự động..."
+                )
+
+                git_mgr = self.resolve_git_auto_manager(target_path=str(TARGET_PATH))
+                success, still_conflicted = await git_mgr.resolve_conflict_with_llm(
+                    conflict_files=conflict_files,
+                    llm_provider=self.llm_adapter
+                )
+
+                if success:
+                    current_branch = await self.git_adapter.get_current_branch()
+                    await self.telegram.send_message(
+                        f"✅ *Git Resolve*: Tự động giải quyết xung đột THÀNH CÔNG!\n"
+                        f"• Đã commit và push lên nhánh: `{current_branch}`\n"
+                        f"⚠️ *Lưu ý*: Tuân thủ rule an toàn Git-Guardian, KAOS không tự ý merge trực tiếp vào `main`.\n"
+                        f"Vui lòng tạo/kiểm tra Pull Request để merge thủ công."
+                    )
+                else:
+                    await self.telegram.send_message(
+                        f"❌ *Git Resolve*: Không thể giải quyết triệt để tất cả xung đột.\n"
+                        f"Các file còn bị conflict:\n"
+                        + "\n".join([f"• `{f}`" for f in still_conflicted])
+                        + "\n\nVui lòng can thiệp thủ công hoặc kiểm tra logs."
+                    )
+            except Exception as e:
+                await self.telegram.send_message(f"❌ *Git Resolve* xảy ra lỗi hệ thống: {e}")
+
         self.telegram.register_command("status", cmd_status)
         self.telegram.register_command("kill", cmd_kill)
         self.telegram.register_command("killall", cmd_killall)
         self.telegram.register_command("git_status", cmd_git_status)
         self.telegram.register_command("git_branch", cmd_git_branch)
-        logger.info("   🤖 Telegram commands registered: /status, /kill, /killall, /git_status, /git_branch")
+        self.telegram.register_command("resolve", cmd_resolve)
+        logger.info("   🤖 Telegram commands registered: /status, /kill, /killall, /git_status, /git_branch, /resolve")

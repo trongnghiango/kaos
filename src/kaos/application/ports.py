@@ -56,6 +56,27 @@ class GitPort(ABC):
         """Lấy trạng thái thay đổi các tệp tin trong repository (git status --short)"""
         pass
 
+    # ----------------------------------------------------------------
+    # Merge & conflict handling (new for Auto-Merge LLM feature)
+    # ----------------------------------------------------------------
+    @abstractmethod
+    async def merge(self, branch_name: str) -> tuple[bool, list[str]]:
+        """Merge <branch_name> vào nhánh hiện tại.
+        Trả về tuple (success, conflict_files). Nếu success=True thì conflict_files = [];
+        ngược lại conflict_files chứa danh sách các file đang trong trạng thái conflict.
+        """
+        pass
+
+    @abstractmethod
+    async def get_conflict_files(self) -> list[str]:
+        """Trả về danh sách các file hiện đang ở trạng thái conflict (MERGE)."""
+        pass
+
+    @abstractmethod
+    async def abort_merge(self) -> None:
+        """Abort một merge đang diễn ra (git merge --abort)."""
+        pass
+
 
 class StoragePort(ABC):
     """Port thao tác tệp tin & lưu trữ dữ liệu"""

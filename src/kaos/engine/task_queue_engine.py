@@ -44,7 +44,8 @@ from kaos.domain.scout_results import (
 )
 from kaos.domain.value_objects import AgentInstruction
 from kaos.engine.execution_policy import FeedbackPolicy
-from kaos.application.ports import LLMProviderPort, GatekeeperPort, StoragePort, KnowledgeGraphPort, NotificationPort
+from kaos.application.ports import LLMProviderPort, GatekeeperPort, StoragePort, KnowledgeGraphPort, NotificationPort, GitPort
+from kaos.infrastructure.adapters.git_adapter import GitCliAdapter
 from kaos.domain.models import Task, DecisionEngine, DecisionRule
 
 # Import Sandbox Facade — fallback an toàn
@@ -136,6 +137,7 @@ class TaskQueueEngine:
         feedback_policy: Optional[FeedbackPolicy] = None,
         classify_error: Optional[Any] = None,
         notification: Optional[NotificationPort] = None,
+        git: Optional[GitPort] = None,
     ):
         self.report = report
         self.queue_file = Path(queue_file) if queue_file else None
@@ -153,6 +155,7 @@ class TaskQueueEngine:
         self._active_async_tasks: Dict[str, asyncio.Task] = {}  # Theo dõi task đang chạy để hỗ trợ /kill
 
         # Resolve ports with lazy imports to prevent circular references
+        self.git = self._resolve_git(git)
         self.llm_provider = self._resolve_llm_provider(llm_provider)
         self.gatekeeper = self._resolve_gatekeeper(gatekeeper)
         self.storage = self._resolve_storage(storage)
@@ -165,6 +168,12 @@ class TaskQueueEngine:
             DecisionRule(principle="correctness", weight=1.0, description="Biên dịch TypeScript và chạy Test"),
         ]
         self.decision_engine = DecisionEngine(rules=default_rules)
+
+    def _resolve_git(self, git: Optional[GitPort]) -> GitPort:
+        if git is not None:
+            return git
+        from kaos.infrastructure.adapters.git_adapter import GitCliAdapter
+        return GitCliAdapter()
 
     def _resolve_llm_provider(self, provider: Optional[LLMProviderPort]) -> LLMProviderPort:
         if provider is not None:
@@ -1386,30 +1395,40 @@ class TaskQueueEngine:
 
     # ────────────── 6. GIT BRANCH MANAGEMENT ───────────────────────
 
-    def _prepare_branch(self, resume: bool = False):
-        """Create isolated Git branch or reuse existing one for resume."""
+    async def _prepare_branch(self, resume: bool = False):
+        """Create isolated Git branch or reuse existing one for resume.
+        Uses GitPort to handle stash, checkout, and merge, and reports conflicts via Telegram.
+        """
         logger.info(f"🌲 [Git] Preparing isolated branch: {self.branch_name}")
         try:
-            if is_sandbox_enabled():
-                run_command(["git", "config", "--global", "user.email", "sandbox@kaos.local"], force_host=True)
-                run_command(["git", "config", "--global", "user.name", "KAOS Engine"], force_host=True)
+            # Stash current work (if any)
+            await self.git.stash_push("KAOS Engine stash")
 
-            run_command(["git", "stash", "push", "-m", "KAOS Engine stash"], capture_output=True, force_host=True)
-            run_command(["git", "checkout", "main"], capture_output=True, force_host=True)
+            # Checkout main branch
+            await self.git.checkout("main")
+
+            # Try fast-forward merge with remote main to ensure branch is up-to-date.
+            success, conflict_files = await self.git.merge("origin/main")
+            if not success:
+                if self.notification:
+                    await self.notification.send_message(
+                        "⚠️ *Git Conflict Detected* while pulling `origin/main`:\n"
+                        + "\n".join([f"`{f}`" for f in conflict_files])
+                    )
+                raise RuntimeError("Git conflict detected during branch preparation")
 
             if resume:
-                res = run_command(
-                    ["git", "checkout", self.branch_name], capture_output=True, force_host=True,
-                )
-                if getattr(res, "returncode", 0) == 0:
-                    logger.info(f"   ✅ Checked out existing branch: {self.branch_name}")
-                    return
-                logger.warning(f"   ⚠️ Branch not found, creating new.")
+                await self.git.checkout(self.branch_name)
+                logger.info(f"   ✅ Checked out existing branch: {self.branch_name}")
+                return
 
-            run_command(["git", "checkout", "-b", self.branch_name], capture_output=True, force_host=True)
+            await self.git.checkout(self.branch_name, create=True)
             logger.info(f"   ✅ Branch {self.branch_name} ready")
+        except RuntimeError:
+            raise
         except Exception as e:
             logger.warning(f"   ⚠️ Git error: {e}")
+            raise
 
     def _cleanup_branch(self, success: bool):
         """Clean up branch after pipeline completes."""
@@ -1480,7 +1499,15 @@ class TaskQueueEngine:
         logger.info(f"   Started at   : {time.strftime('%H:%M:%S')}")
 
         success = False
-        self._prepare_branch(resume=resume)
+
+        # Branch preparation — may raise RuntimeError on conflict.
+        try:
+            await self._prepare_branch(resume=resume)
+        except RuntimeError as e:
+            logger.error(str(e))
+            self._save_queue_status()
+            self._report(False)
+            return False
 
         try:
             self.load(resume=resume)

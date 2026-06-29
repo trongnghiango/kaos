@@ -7,13 +7,34 @@ from pathlib import Path
 # Add src to pythonpath
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+# Nạp file .env thủ công TRƯỚC KHI import bất kỳ module nào của kaos
+env_path = Path(__file__).parent.parent / ".env"
+if env_path.exists():
+    with open(env_path) as f:
+        for line in f:
+            line_str = line.strip()
+            if line_str and not line_str.startswith("#"):
+                if line_str.startswith("export "):
+                    line_str = line_str[7:]
+                key, val = line_str.split("=", 1)
+                os.environ[key.strip()] = val.strip('"\' ')
+
 from kaos.infrastructure.di import Container
 from kaos.engine.task_queue_engine import Task, TaskQueueEngine
 
 async def run_demo():
     print("🚀 [Demo] Khởi tạo KAOS Container & Redis Graph...")
+    print(f"   ├─ Env TELEGRAM_MONITOR_ENABLED: {os.getenv('TELEGRAM_MONITOR_ENABLED')}")
+    print(f"   ├─ Env TELEGRAM_TOKEN: {os.getenv('TELEGRAM_TOKEN')[:6] if os.getenv('TELEGRAM_TOKEN') else None}...")
+    print(f"   └─ Env TELEGRAM_CHAT_ID: {os.getenv('TELEGRAM_CHAT_ID')}")
     container = Container(target_module="demo")
     kg = container.knowledge_graph
+
+    # Khởi động telegram session
+    notification = container.telegram
+    if notification:
+        print("📲 [Demo] Đã phát hiện cấu hình Telegram, kích hoạt gửi thông báo...")
+        await notification.__aenter__()
 
     # Reset graph cũ
     print("🧹 [Demo] Resetting existing graph...")
@@ -26,6 +47,7 @@ async def run_demo():
         gatekeeper=container.gatekeeper_adapter,
         storage=container.storage_adapter,
         knowledge_graph=kg,
+        notification=notification,
     )
 
     # Định nghĩa 3 Tasks (Nhân) có quan hệ phụ thuộc (DAG)
@@ -71,6 +93,9 @@ async def run_demo():
     # 3. Giả lập quá trình chạy AutoFixer cho T1_Stub (Có lỗi -> Sửa -> Thành công)
     print("\n🔧 [Demo] Giả lập AutoFixer loop cho T1_Stub:")
     
+    if notification:
+        await notification.send_message("⏳ [Demo] Bắt đầu thực thi Task T1_Stub: Generate API user stub")
+
     # Attempt 1: Thất bại do lint error
     print("   ❌ Attempt 1: Lỗi linter (unused import)")
     await engine._upsert_attempt(
@@ -82,6 +107,12 @@ async def run_demo():
         error_msg="api/user.py:3:1: F401 'os' imported but unused",
         feedback_msg=""
     )
+    if notification:
+        await notification.send_alert(
+            "Task T1_Stub - Lỗi Lint",
+            "Attempt 1: api/user.py:3:1: F401 'os' imported but unused",
+            level="WARNING"
+        )
 
     # Attempt 2: Thành công sau khi fix
     print("   ✅ Attempt 2: Sửa thành công")
@@ -94,6 +125,8 @@ async def run_demo():
         error_msg="",
         feedback_msg="F401 'os' imported but unused -> Removed unused import"
     )
+    if notification:
+        await notification.send_message("✅ [Demo] Task T1_Stub thành công sau 2 attempts!")
 
     # 4. In ra thông số graph hiện tại
     stats = await kg.get_graph_stats()
@@ -102,6 +135,11 @@ async def run_demo():
     print(f"   ├─ Conditions (Duyên): {stats['conditions']}")
     print(f"   ├─ Results (Quả): {stats['results']}")
     print(f"   └─ Edges (Mối liên kết): {stats['edges']}")
+
+    if notification:
+        print("⏳ Đang đợi 3 giây để đảm bảo Telegram hoàn tất việc gửi tin nhắn...")
+        await asyncio.sleep(3)
+        await notification.__aexit__(None, None, None)
 
     print("\n🖥️ [RedisInsight Visualization Helper]")
     print("1. Hãy đảm bảo container Redis Stack đang chạy.")

@@ -7,6 +7,7 @@ Khởi tạo cấu hình và trả về các Use Cases sẵn sàng sử dụng.
 
 from typing import Optional
 from pathlib import Path
+import asyncio
 
 # Domain models/configs
 from kaos.domain.value_objects import ExecutionConfig, SessionMetadata
@@ -105,7 +106,7 @@ class Container:
                 token=TELEGRAM_TOKEN,
                 chat_id=TELEGRAM_CHAT_ID,
             )
-            asyncio.ensure_future(self._register_telegram_commands())
+            self._register_telegram_commands()
             logger.info("📲 Telegram monitor ENABLED")
         else:
             self.telegram = None

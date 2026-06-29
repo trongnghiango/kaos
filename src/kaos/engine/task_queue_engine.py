@@ -1278,7 +1278,7 @@ class TaskQueueEngine:
         self._active_async_tasks[task.task_id] = current_async_task
 
         if self.notification:
-            await self.notification.send_message(f"⏳ *[KAOS]* Bắt đầu thực thi Task `{task.task_id}`: {task.title}")
+            await self.notification.send_message(f"⏳ <b>[KAOS]</b> Bắt đầu thực thi Task <code>{task.task_id}</code>: {task.title}")
 
         # Build context file (file-based, backward compat)
         task_ctx = self._build_task_context(task)
@@ -1311,13 +1311,13 @@ class TaskQueueEngine:
                 self._save_queue_status()
                 logger.info(f"   ✅  [{task.task_id}] All checks PASSED")
                 if self.notification:
-                    await self.notification.send_message(f"✅ *[KAOS]* Task `{task.task_id}` thành công!")
+                    await self.notification.send_message(f"✅ <b>[KAOS]</b> Task <code>{task.task_id}</code> thành công!")
                 return True
             elif result.get("skipped", False):
                 self._save_queue_status()
                 logger.info(f"   ✅  [{task.task_id}] Skipped by classifier")
                 if self.notification:
-                    await self.notification.send_message(f"⏭️ *[KAOS]* Task `{task.task_id}` được skip.")
+                    await self.notification.send_message(f"⏭️ <b>[KAOS]</b> Task <code>{task.task_id}</code> được skip.")
                 return True
             else:
                 task.status = "FAILED"
@@ -1338,7 +1338,7 @@ class TaskQueueEngine:
             self._save_queue_status()
             logger.warning(f"   🛑 Task {task.task_id} was CANCELLED/KILLED by Telegram command.")
             if self.notification:
-                await self.notification.send_message(f"🛑 *[KAOS]* Task `{task.task_id}` đã bị DỪNG NÓNG theo yêu cầu người dùng.")
+                await self.notification.send_message(f"🛑 <b>[KAOS]</b> Task <code>{task.task_id}</code> đã bị DỪNG NÓNG theo yêu cầu người dùng.")
             raise
         finally:
             self._active_async_tasks.pop(task.task_id, None)

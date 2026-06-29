@@ -7,6 +7,7 @@ Telegram Bot API (no python-telegram-bot dependency).
 Uses asyncio + aiohttp for fully async communication.
 """
 import asyncio
+import html
 import logging
 import time
 from typing import Callable, Coroutine, Any, Dict, Optional
@@ -54,15 +55,21 @@ class TelegramAdapter(NotificationPort):
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()
         url = f"{self._base_url}/sendMessage"
-        payload = {"chat_id": self._chat_id, "text": text}
+        payload = {
+            "chat_id": self._chat_id,
+            "text": text,
+            "parse_mode": "HTML"
+        }
         async with self._session.post(url, json=payload) as resp:
             if resp.status != 200:
                 logger.error(f"Telegram sendMessage failed: {resp.status} – {await resp.text()}")
 
     async def send_alert(self, title: str, details: str, level: str = "WARNING") -> None:
+        escaped_title = html.escape(title)
+        escaped_details = html.escape(details)
         text = (
-            f"🚨 *{level}*: {title}\n\n"
-            f"```\n{details[:500]}\n```"
+            f"🚨 <b>{level}</b>: {escaped_title}\n\n"
+            f"<pre>{escaped_details[:500]}</pre>"
         )
         await self.send_message(text)
 

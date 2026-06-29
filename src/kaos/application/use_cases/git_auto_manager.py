@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from kaos.application.ports import GitPort, StoragePort
+from kaos.application.ports import GitPort, StoragePort, LLMProviderPort
 from kaos.application.use_cases.act_executor import TaskExecutionResult
 from kaos.config import TARGET_PATH
 
@@ -215,3 +215,96 @@ class GitAutoManager:
             )
         except Exception:
             pass
+
+    async def resolve_conflict_with_llm(
+        self,
+        conflict_files: List[str],
+        llm_provider: LLMProviderPort,
+    ) -> Tuple[bool, List[str]]:
+        """
+        Đọc từng file conflict, gửi nội dung chứa conflict marker tới LLM để giải quyết,
+        ghi đè nội dung sạch trở lại file và commit/push.
+        """
+        from kaos.domain.value_objects import AgentInstruction
+        still_conflicted = []
+
+        logger.info(f"   🧠 [Conflict Resolver] LLM is starting to resolve {len(conflict_files)} conflicted files...")
+
+        for f in conflict_files:
+            file_path = Path(self.target_path) / f
+            if not file_path.exists():
+                logger.warning(f"      ⚠️ File not found: {file_path}")
+                still_conflicted.append(f)
+                continue
+
+            try:
+                raw_content = file_path.read_text(encoding="utf-8", errors="ignore")
+                
+                skill_content = (
+                    "You are a Git Conflict Resolver. Your task is to resolve conflict markers in the provided code.\n"
+                    "Analyze the changes between <<<<<<< HEAD, =======, and >>>>>>>. Merge them logically,\n"
+                    "ensuring you keep correct NestJS/TypeScript structures, imports, and variables.\n"
+                    "Keep all correct logic and combine them if both sides are valid changes.\n"
+                    "Make sure the final output is compile-safe, clean, and DOES NOT contain any conflict markers like <<<<<<<, =======, >>>>>>>.\n"
+                    "Return ONLY the resolved clean source code of the file. Do not include markdown block wrappers or conversational text."
+                )
+
+                instruction = AgentInstruction(
+                    skill_name="git-conflict-resolver",
+                    skill_content=skill_content,
+                    task_context={
+                        "file_path": str(f),
+                        "conflict_content": raw_content
+                    },
+                    target_path=self.target_path,
+                    output_file=str(file_path),
+                    timeout=120,
+                    max_turns=30,
+                    raw_instruction=(
+                        f"Please resolve the git conflict in the file: {f}.\n\n"
+                        f"File content with conflict markers:\n"
+                        f"```\n{raw_content}\n```\n\n"
+                        f"Analyze the logic and rewrite the file to: {file_path}\n"
+                        f"Make sure to output the complete file correctly resolved without any markers."
+                    )
+                )
+
+                exit_code, output_logs = await llm_provider.run_agent(instruction)
+
+                if exit_code != 0:
+                    logger.error(f"      ❌ LLM failed to resolve conflict for {f} (exit code: {exit_code})")
+                    still_conflicted.append(f)
+                    continue
+
+                resolved_content = file_path.read_text(encoding="utf-8", errors="ignore")
+                markers = ["<<<<<<<", "=======", ">>>>>>>"]
+                if any(m in resolved_content for m in markers):
+                    logger.warning(f"      ⚠️ Resolved file {f} still contains conflict markers!")
+                    still_conflicted.append(f)
+                else:
+                    logger.info(f"      ✅ Successfully resolved conflict for file: {f}")
+
+            except Exception as e:
+                logger.error(f"      ❌ Exception resolving conflict for {f}: {e}")
+                still_conflicted.append(f)
+
+        if not still_conflicted:
+            try:
+                await self.git.commit_all("chore: auto-resolved git conflicts via LLM Agent")
+                current_branch = await self.git.get_current_branch()
+                if current_branch == "main":
+                    logger.error("      ❌ Current branch is main. Will not push conflict resolution directly to main.")
+                    return False, ["BRANCH_PROTECTION: cannot push to main"]
+                
+                pushed = await self.git.push(current_branch)
+                if pushed:
+                    logger.info(f"      📤 Pushed resolved branch {current_branch} to origin")
+                else:
+                    logger.warning("      ⚠️ Push failed (check remote configuration)")
+                
+                return True, []
+            except Exception as e:
+                logger.error(f"      ❌ Failed to commit/push resolved conflicts: {e}")
+                return False, ["GIT_COMMIT_PUSH_ERROR"]
+        else:
+            return False, still_conflicted

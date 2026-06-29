@@ -64,3 +64,22 @@ So sánh trực tiếp lượng RAM tiêu thụ, tốc độ và I/O giữa phư
 PYTHONPATH=src python3 scripts/benchmark.py
 ```
 Kết quả so sánh sẽ được ghi tự động vào `benchmarks/graph_vs_file.csv`.
+
+---
+
+## 🔀 Auto-Merge Git Conflict via LLM (v1.2.0)
+
+Kể từ phiên bản `v1.2.0`, KAOS hỗ trợ tự động phát hiện và giải quyết xung đột Git (Git Conflict) bằng LLM Agent thông qua giao tiếp Telegram Bot:
+
+1. **Phát hiện Xung đột (Git Conflict Detection)**:
+   - Khi chuẩn bị nhánh làm việc (`_prepare_branch`), nếu quá trình đồng bộ code từ remote main xảy ra xung đột, Engine sẽ tự động phát hiện bằng bộ lọc unmerged (`git diff --name-only --diff-filter=U`).
+   - Engine gửi tin nhắn cảnh báo chi tiết tới Telegram kèm danh sách các file bị xung đột và tạm thời treo luồng chạy thay vì crash.
+
+2. **Lệnh Giải quyết Xung đột `/resolve auto_fix`**:
+   - Khi nhận lệnh `/resolve auto_fix` từ Telegram, Container kích hoạt LLM Agent đọc nội dung thô chứa conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`).
+   - LLM tự động phân tích logic ở cả 2 nhánh xung đột, hợp nhất (merge) chúng một cách thông minh để đảm bảo an toàn cú pháp và logic nghiệp vụ.
+   - Ghi đè lại nội dung đã giải quyết sạch conflict và thực hiện tự động commit & push lên nhánh làm việc.
+
+3. **Nguyên tắc An toàn (Git-Guardian)**:
+   - **Tuyệt đối không tự ý merge vào main**. Sau khi giải quyết conflict, KAOS chỉ commit/push lên nhánh biệt lập của session (nhánh `kaos/auto-...` hoặc nhánh được chỉ định) và gửi link/thông tin PR báo cáo cho user.
+   - User tự tay thực hiện Pull Request hoặc merge thủ công vào `main` để đảm bảo an toàn tối đa cho mã nguồn production.

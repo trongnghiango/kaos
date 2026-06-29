@@ -62,16 +62,16 @@ def generate_visualization():
                 "dashes": True
             })
 
-    # REQUIRES (Task -> Condition)
+    # REQUIRES (Task -> Condition) -> Đảo chiều trực quan: Condition -> Task (Duyên tác động vào Nhân)
     req_keys = r.keys("kg:edge:*:requires")
     for key in req_keys:
         task_id = key.split(":")[-2]
         conds = r.smembers(key)
         for cond_id in conds:
             edges_list.append({
-                "from": task_id,
-                "to": cond_id,
-                "label": "REQUIRES",
+                "from": cond_id,
+                "to": task_id,
+                "label": "FEEDS",
                 "color": {"color": "#f59e0b", "highlight": "#d97706"},
                 "arrows": "to"
             })

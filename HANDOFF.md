@@ -1,99 +1,51 @@
-# BÀN GIAO DỰ ÁN KAOS — LẦN 9 (Fix test failures sau refactor)
+# BÀN GIAO DỰ ÁN KAOS — LẦN 10 (Hoàn tất sửa lỗi & Chuẩn bị chạy thử trên STAX_ASP)
 
-> **Thời gian:** 2026-06-27 — 12:40  
-> **Branch hiện tại:** `kaos/auto-all-20260627_102818-home-ka-repos-github`  
-> **Branch cơ sở:** `main`  
-> **Trạng thái:** Đã refactor xong Step 3 + Step 4, test chưa pass hết
+> **Thời gian:** 2026-06-29 — 13:55  
+> **Thư mục dự án:** `/home/ka/Repos/github.com/trongnghiango/kaos`  
+> **Trạng thái:** Đã fix thành công 105/105 tests (xanh toàn bộ), sửa CLI routing, cập nhật kịch bản runner.
 
 ---
 
-## Tình trạng hiện tại
+## 🛠️ Những công việc ĐÃ HOÀN THÀNH trong phiên này
 
-### ✅ Đã hoàn thành
+1. **Sửa lỗi Test Suite (`pytest` xanh 105/105)**:
+   - Thêm `status` và `result` vào dataclass `ActTask` trong `src/kaos/application/use_cases/act_executor.py` để tránh lỗi `AttributeError`.
+   - Mock hoàn toàn cổng `GitPort` (sử dụng `mock_git` fixture) trong `tests/use_cases/test_act_executor.py` để ngăn test suite tự động chạy lệnh git thật (stash, checkout...) trên repository gốc.
+   - Sửa decorator `@pytest.mark.asyncio` cho `test_telegram_polling` trong `tests/test_telegram.py`.
 
-#### Step 3: Tách `_execute_single_task` thành helpers trong `task_queue_engine.py`
-- Thêm 7 helpers mới:
-  1. `_build_task_context(self, task)` — context JSON với cả ScoutReport nếu có
-  2. `_run_planner(self, task_ctx_file, plan_file) -> bool` — dùng `self.llm_provider.run_agent`
-  3. `_run_coder(self, task, ctx_file, skill_file, tactical_plan, attempt, feedback_msg, budget) -> CoderResult`
-  4. `_run_evaluator(self, task, ctx_file, files_created, files_modified) -> EvalResult`
-  5. `_run_gatekeeper_compile(self, task, attempt, baseline) -> CompileResult` — dùng `self.gatekeeper.compile_check`
-  6. `_run_gatekeeper_test(self, task, attempt) -> TestResult` — dùng `self.gatekeeper.run_tests`
-  7. `_feedback_loop(self, task, baseline, tactical_plan) -> dict` — AutoFixer + Escalation dùng `self.feedback_policy`
-  8. `@staticmethod _is_new_error(...)` — copy từ `act_executor.py`
-- `_execute_single_task` viết lại ~50 dòng: build context → planner → feedback loop → update stats
-- Nội hàm feedback loop có: first attempt → AutoFixer (max_fix_attempts) → Escalation (nếu enable)
+2. **Cơ chế routing CLI thông minh (`cli.py`)**:
+   - Viết helper `resolve_inputs` tự động chuyển đổi file spec văn bản dạng Markdown (`.md`, `.txt`, `.markdown`) truyền qua positional argument (`raw_data`) sang tham số `--spec`. 
+   - Giờ đây, khi gõ `./run-kaos.sh <file-spec.md>`, KAOS sẽ hiểu đó là file đặc tả nghiệp vụ (Spec), thay vì cố đọc như file Excel database thô và văng lỗi.
 
-#### Step 4: ActExecutor delegate xuống engine
-- `execute()` giữ: `_generate_tasks`, `_capture_baseline_errors`
-- Engine khởi tạo với ports từ DI + `FeedbackPolicy`
-- `engine.load_pregenerated_tasks(tasks)` → `engine.run()` → map kết quả về `TaskExecutionResult`
-- Đã xoá: `_execute_with_dependencies`, `_execute_single_task`, `_attempt_execution`, `_build_task_context` (internal), `_build_coder_instruction`, `_parse_coder_output`
-- Giữ lại: `_select_skill_file` (test cần), `_generate_tasks`, `_capture_baseline_errors`, `_is_new_error`
+3. **Cập nhật script điều khiển chính (`run-kaos.sh`)**:
+   - Sửa biến môi trường `KAOS_TARGET_PATH` trỏ chuẩn xác đến thư mục codebase đích `/home/ka/Repos/github.com/trongnghiango/STAX_ASP`.
+   - Tự động kích hoạt `.venv` cục bộ bên trong thư mục `/kaos` nếu tồn tại, trước khi fallback sang môi trường chung.
+   - Gọi đúng file CLI mới: `src/kaos/interfaces/cli.py`.
 
-#### Files đã sửa
-| File | Thay đổi |
-|------|----------|
-| `src/kaos/engine/task_queue_engine.py` | +helpers, `_execute_single_task` gọn lại, `load()` hỗ trợ preloaded tasks, thêm `re` import |
-| `src/kaos/application/use_cases/act_executor.py` | `execute()` delegate, xoá internal execution methods |
-| `src/kaos/engine/__init__.py` | Export `TaskQueueEngine` + `FeedbackPolicy` (đã làm từ trước) |
+4. **Sửa lỗi Sắp xếp Level DAG (Topological Sort)**:
+   - Trong `task_queue_engine.py`, cập nhật kiểm tra `if self.level_groups:` thay vì `if levels:` để tự động fallback sang cơ chế sắp xếp bộ nhớ trong (in-memory sort) khi RedisGraph trả về tập hợp trống hoặc không khớp.
 
-### ❌ Cần fix
+---
 
-#### Test failures: 94/104 pass, 10 failures
-Tất cả 10 failures đều ở `tests/use_cases/test_act_executor.py` — lỗi giống nhau:
+## 📌 Các bước tiếp theo cần thực hiện khi về nhà
 
-```
-src/kaos/engine/task_queue_engine.py:328: in load_pregenerated_tasks
-    if t.status == "SUCCESS":
-AttributeError: 'ActTask' object has no attribute 'status'
-```
+1. **Khắc phục lỗi bắt buộc Excel khi Dry-run**:
+   - Hiện tại, nếu chạy Dry-run (`--run-dry` hoặc chế độ tự động phân tích độ tương thích) mà không truyền file Excel `.xlsx`, CLI sẽ báo lỗi:
+     `❌ Phân tích độ tương thích database yêu cầu đầu vào raw_data (đường dẫn file Excel .xlsx).`
+   - Cần tinh chỉnh trong `cli.py` để nếu chỉ có Spec Markdown thì bỏ qua kiểm tra database Excel hoặc chạy chế độ phân tích chay (spec-only analysis).
 
-**Nguyên nhân:** `load_pregenerated_tasks` gọi `t.status` nhưng `ActTask` (từ `act_executor.py`) không có field `status`. `Task` (engine native) có `status`.
+2. **Chạy thực tế kiểm thử tích hợp trên STAX_ASP**:
+   - Di chuyển vào `/home/ka/Repos/github.com/trongnghiango/kaos`.
+   - Chạy lệnh sau để kiểm tra luồng phân tích Spec:
+     ```bash
+     ./run-kaos.sh /home/ka/Repos/github.com/trongnghiango/STAX_ASP/refactor-extract-packages.spec.md
+     ```
 
-**Cách fix đơn giản nhất** (sửa trong `task_queue_engine.py`):
-```python
-# Dòng 328 trong load_pregenerated_tasks, thay:
-    if t.status == "SUCCESS":
-# Thành:
-    status = getattr(t, 'status', None)
-    if status == "SUCCESS":
-```
+3. **Hiện thực hóa ADR-002 (RedisGraph & Memory Routing)**:
+   - Theo dõi thiết kế "Nhân - Duyên - Quả" trong `docs/adr/ADR-002_redisgraph-memory-aware-routing.md` để triển khai `KnowledgeGraphPort` sử dụng RedisGraph thay thế lưu trữ file JSON tạm nhằm tiết kiệm tokens (tận dụng Prompt Caching) và tối ưu hóa hiệu năng.
 
-Hoặc thêm `status` field vào `ActTask` dataclass (trong `act_executor.py`):
-```python
-@dataclass
-class ActTask:
-    ...
-    status: str = "PENDING"  # thêm dòng này
-```
+---
 
-Cả 2 cách đều ổn. Cách 1 an toàn hơn (ít tác động phụ).
-
-#### Test bị ảnh hưởng (10 tests)
-Tất cả đều trong `TestActExecutor`:
-- test_execute_empty_report
-- test_execute_report_with_conflicts
-- test_execute_new_module
-- test_dependency_order
-- test_compile_failure_triggers_autofixer
-- test_compile_success_no_autofixer
-- test_autofixer_fixed_on_second_attempt
-- test_llm_runtime_error_handled
-- test_exception_during_execution
-- test_fix_attempt_records
-- test_files_tracked_on_success
-
-## Cách verify
-
-```bash
-.venv/bin/python -m pytest tests -v
-```
-
-Sau khi fix, kỳ vọng 104/104 pass.
-
-## Prompt cho phiên tiếp theo
-
-```text
-Đọc HANDOFF.md, sửa lỗi `load_pregenerated_tasks` access `ActTask.status` (AttributeError). Sau đó chạy pytest tests -v, nếu pass hết thì commit và push lên remote.
-```
+## ⚠️ Lưu ý an toàn môi trường
+* **Không quét hoặc sửa đổi bất kỳ file nào ngoài phạm vi của thư mục dự án `/home/ka/Repos/github.com/trongnghiango/kaos`** để tránh làm lộn xộn môi trường của host.
+* Khi cấu hình/chạy CLI, toàn bộ log và file tạm sẽ được gom vào thư mục `.kaos/tmp` nội bộ.

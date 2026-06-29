@@ -51,7 +51,7 @@ class AnalyzeCompatibilityUseCase:
 
     async def execute(
         self,
-        raw_data: str,
+        raw_data: Optional[str],
         spec: Optional[str] = None,
         report_path: Optional[str] = None,
         run_dry: bool = False,
@@ -89,8 +89,9 @@ class AnalyzeCompatibilityUseCase:
             output_json.unlink()
 
         # 4. Tạo hướng dẫn cho Analyzer LLM
+        raw_data_str = str(Path(raw_data).resolve()) if raw_data else "Không cung cấp file database legacy (Chỉ phân tích nghiệp vụ spec)."
         instruction = Prompts.COMPATIBILITY_ANALYZER.format(
-            raw_data_path=str(Path(raw_data).resolve()),
+            raw_data_path=raw_data_str,
             spec_content=spec_content,
             schema_path=str(schema_file.resolve()),
             output_json_path=str(output_json.resolve())
@@ -158,7 +159,7 @@ class AnalyzeCompatibilityUseCase:
             best_option=best_option,
             confidence=confidence,
             action=action,
-            raw_data_path=raw_data,
+            raw_data_path=raw_data if raw_data else "Không cung cấp file database legacy (Chỉ phân tích nghiệp vụ spec).",
             spec_content=spec_content
         )
 

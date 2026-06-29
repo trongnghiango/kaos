@@ -376,24 +376,26 @@ class TaskQueueEngine:
             try:
                 levels_data = await self.knowledge_graph.calculate_levels()
                 levels = levels_data.get("levels", {})
-                for lvl, tids in levels.items():
-                    level_tasks = []
-                    for tid in tids:
-                        task = self.tasks.get(tid)
-                        if task:
-                            task.level = lvl
-                            task.status = "PENDING"
-                            level_tasks.append(task)
-                    if level_tasks:
-                        self.level_groups[lvl] = level_tasks
+                if levels:
+                    for lvl, tids in levels.items():
+                        level_tasks = []
+                        for tid in tids:
+                            task = self.tasks.get(tid)
+                            if task:
+                                task.level = lvl
+                                task.status = "PENDING"
+                                level_tasks.append(task)
+                        if level_tasks:
+                            self.level_groups[lvl] = level_tasks
 
-                logger.info(
-                    f"📐 [DAG‑Graph] Sorted {len(self.tasks)} tasks into {len(self.level_groups)} levels via Knowledge Graph"
-                )
-                for level, tasks in sorted(self.level_groups.items()):
-                    names = ", ".join(f"{t.task_id}({t.module})" for t in tasks)
-                    logger.info(f"   Level {level} (graph): {names}")
-                return
+                    if self.level_groups:
+                        logger.info(
+                            f"📐 [DAG‑Graph] Sorted {len(self.tasks)} tasks into {len(self.level_groups)} levels via Knowledge Graph"
+                        )
+                        for level, tasks in sorted(self.level_groups.items()):
+                            names = ", ".join(f"{t.task_id}({t.module})" for t in tasks)
+                            logger.info(f"   Level {level} (graph): {names}")
+                        return
             except Exception as exc:
                 logger.warning(f"🔧 Graph‑based level calculation failed, falling back to in‑memory: {exc}")
 

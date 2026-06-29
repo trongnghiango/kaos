@@ -24,21 +24,21 @@ def generate_visualization():
     results = {}
     
     # Lấy Tasks
-    task_keys = r.keys("kaos:graph:task:*")
+    task_keys = r.keys("kg:task:*")
     for key in task_keys:
         task_id = key.split(":")[-1]
         data = r.hgetall(key)
         tasks[task_id] = data
 
     # Lấy Conditions
-    cond_keys = r.keys("kaos:graph:condition:*")
+    cond_keys = r.keys("kg:condition:*")
     for key in cond_keys:
         cond_id = key.split(":")[-1]
         data = r.hgetall(key)
         conditions[cond_id] = data
 
     # Lấy Results
-    result_keys = r.keys("kaos:graph:result:*")
+    result_keys = r.keys("kg:result:*")
     for key in result_keys:
         result_id = key.split(":")[-1]
         data = r.hgetall(key)
@@ -48,9 +48,9 @@ def generate_visualization():
     edges_list = []
     
     # DEPENDS_ON (Task -> Task)
-    dep_keys = r.keys("kaos:graph:edge:depends_on:*")
+    dep_keys = r.keys("kg:edge:*:depends_on")
     for key in dep_keys:
-        child_id = key.split(":")[-1]
+        child_id = key.split(":")[-2]
         parents = r.smembers(key)
         for parent_id in parents:
             edges_list.append({
@@ -63,9 +63,9 @@ def generate_visualization():
             })
 
     # REQUIRES (Task -> Condition)
-    req_keys = r.keys("kaos:graph:edge:requires:*")
+    req_keys = r.keys("kg:edge:*:requires")
     for key in req_keys:
-        task_id = key.split(":")[-1]
+        task_id = key.split(":")[-2]
         conds = r.smembers(key)
         for cond_id in conds:
             edges_list.append({
@@ -77,9 +77,9 @@ def generate_visualization():
             })
 
     # PRODUCES (Task -> Result)
-    prod_keys = r.keys("kaos:graph:edge:produces:*")
+    prod_keys = r.keys("kg:edge:*:produces")
     for key in prod_keys:
-        task_id = key.split(":")[-1]
+        task_id = key.split(":")[-2]
         res_list = r.smembers(key)
         for res_id in res_list:
             edges_list.append({
@@ -91,9 +91,9 @@ def generate_visualization():
             })
 
     # MUTATES (Result -> Condition)
-    mut_keys = r.keys("kaos:graph:edge:mutates:*")
+    mut_keys = r.keys("kg:edge:*:mutates")
     for key in mut_keys:
-        res_id = key.split(":")[-1]
+        res_id = key.split(":")[-2]
         conds = r.smembers(key)
         for cond_id in conds:
             edges_list.append({
@@ -203,8 +203,10 @@ def generate_visualization():
             border-radius: 3px;
         }
         #container {
-            flex-grow: 1;
+            height: calc(100vh - 60px);
+            width: 100vw;
             position: relative;
+            overflow: hidden;
         }
         #mynetwork {
             width: 100%;

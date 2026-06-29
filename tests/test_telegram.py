@@ -21,10 +21,17 @@ async def test_telegram_polling():
         status_called = True
         print(f"   📥 Command /status received with args: '{args}'")
 
+    git_status_called = False
+    async def mock_git_status_handler(chat_id, args):
+        nonlocal git_status_called
+        git_status_called = True
+        print(f"   📥 Command /git_status received")
+
     bot.register_command("status", mock_status_handler)
+    bot.register_command("git_status", mock_git_status_handler)
     
-    # Giả lập xử lý getUpdates json trả về lệnh /status
-    mock_update = {
+    # Giả lập xử lý getUpdates json trả về lệnh /status & /git_status
+    mock_update_1 = {
         "update_id": 10001,
         "message": {
             "message_id": 45,
@@ -32,6 +39,16 @@ async def test_telegram_polling():
             "chat": {"id": 987654321, "type": "private"},
             "date": 1624888800,
             "text": "/status detailed_report"
+        }
+    }
+    mock_update_2 = {
+        "update_id": 10002,
+        "message": {
+            "message_id": 46,
+            "from": {"id": 987654321, "first_name": "TestUser"},
+            "chat": {"id": 987654321, "type": "private"},
+            "date": 1624888801,
+            "text": "/git_status"
         }
     }
     
@@ -56,7 +73,7 @@ async def test_telegram_polling():
         def get(self, url, params=None, **kwargs):
             # Trả về update giả lập cho lần poll đầu tiên, sau đó trả về rỗng để dừng
             if params and params.get("offset", 0) == 0:
-                return MockResponse(200, {"ok": True, "result": [mock_update]})
+                return MockResponse(200, {"ok": True, "result": [mock_update_1, mock_update_2]})
             return MockResponse(200, {"ok": True, "result": []})
         async def close(self):
             pass
@@ -64,12 +81,13 @@ async def test_telegram_polling():
     bot._session = MockSession()
     
     # Chạy poll một lần để xử lý update giả lập
-    print("   🔄 Giả lập nhận message /status từ User...")
+    print("   🔄 Giả lập nhận message /status và /git_status từ User...")
     await bot._poll_once()
     
     # Kiểm tra xem handler đã được gọi chưa
     assert status_called is True, "Handler cho status chưa được gọi!"
-    assert bot._offset == 10002, "Telegram offset chưa được tăng chính xác!"
+    assert git_status_called is True, "Handler cho git_status chưa được gọi!"
+    assert bot._offset == 10003, "Telegram offset chưa được tăng chính xác!"
     print("🎉 Test Telegram Adapter PASSED!")
 
 if __name__ == "__main__":

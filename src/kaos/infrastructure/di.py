@@ -304,7 +304,26 @@ class Container:
             except Exception as e:
                 await self.telegram.send_message(f"❌ Lỗi: {e}")
 
+        async def cmd_git_status(chat_id: str, args: str):
+            try:
+                status = await self.git_adapter.get_git_status()
+                if not status.strip():
+                    await self.telegram.send_message("✅ *Git Status*: Repository is clean.")
+                else:
+                    await self.telegram.send_message(f"📁 *Git Status*:\n```\n{status}\n```")
+            except Exception as e:
+                await self.telegram.send_message(f"❌ Lỗi lấy status: {e}")
+
+        async def cmd_git_branch(chat_id: str, args: str):
+            try:
+                branch = await self.git_adapter.get_current_branch()
+                await self.telegram.send_message(f"🔀 *Git Branch*: Hiện tại đang ở `{branch}`")
+            except Exception as e:
+                await self.telegram.send_message(f"❌ Lỗi lấy branch: {e}")
+
         self.telegram.register_command("status", cmd_status)
         self.telegram.register_command("kill", cmd_kill)
         self.telegram.register_command("killall", cmd_killall)
-        logger.info("   🤖 Telegram commands registered: /status, /kill, /killall")
+        self.telegram.register_command("git_status", cmd_git_status)
+        self.telegram.register_command("git_branch", cmd_git_branch)
+        logger.info("   🤖 Telegram commands registered: /status, /kill, /killall, /git_status, /git_branch")

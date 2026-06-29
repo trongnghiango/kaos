@@ -51,6 +51,8 @@ class TelegramAdapter(NotificationPort):
     # ── Gửi tin nhắn ──────────────────────────────────────────────
 
     async def send_message(self, text: str) -> None:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
         url = f"{self._base_url}/sendMessage"
         payload = {"chat_id": self._chat_id, "text": text}
         async with self._session.post(url, json=payload) as resp:
@@ -71,6 +73,8 @@ class TelegramAdapter(NotificationPort):
         if self._running:
             return
         self._running = True
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
         logger.info(f"   📲 Telegram polling started (interval={self._polling_interval}s)")
         while self._running:
             await self._poll_once()

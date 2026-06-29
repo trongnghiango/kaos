@@ -51,6 +51,11 @@ class GitPort(ABC):
         """Lấy tên nhánh hiện tại."""
         pass
 
+    @abstractmethod
+    async def get_git_status(self) -> str:
+        """Lấy trạng thái thay đổi các tệp tin trong repository (git status --short)"""
+        pass
+
 
 class StoragePort(ABC):
     """Port thao tác tệp tin & lưu trữ dữ liệu"""

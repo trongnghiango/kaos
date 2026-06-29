@@ -111,3 +111,15 @@ class GitCliAdapter(GitPort):
         if hasattr(res, "returncode") and res.returncode == 0:
             return res.stdout.strip()
         return "main"
+
+    async def get_git_status(self) -> str:
+        """Lấy trạng thái thay đổi các tệp tin trong repository (git status --short)"""
+        res = await run_command_async(
+            ["git", "status", "--short"],
+            cwd=str(config.TARGET_PATH),
+            capture_output=True,
+            force_host=True,
+        )
+        if hasattr(res, "returncode") and res.returncode == 0:
+            return res.stdout
+        return "Unknown or error getting git status"

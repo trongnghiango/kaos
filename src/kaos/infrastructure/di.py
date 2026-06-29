@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Dependency Injection Container for KAOS
 =======================================
@@ -5,7 +7,7 @@ Dependency Injection Container for KAOS
 Khởi tạo cấu hình và trả về các Use Cases sẵn sàng sử dụng.
 """
 
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from pathlib import Path
 import asyncio
 
@@ -13,18 +15,19 @@ import asyncio
 from kaos.domain.value_objects import ExecutionConfig, SessionMetadata
 # Application Ports
 from kaos.application.ports import CachePort, GitPort, StoragePort, GatekeeperPort, LLMProviderPort, KnowledgeGraphPort, NotificationPort
-# Application Use Cases
-from kaos.application.use_cases import (
-    ExtractSchemaUseCase,
-    AnalyzeRequirementsUseCase,
-    DetectScopeUseCase,
-    ExecuteWorkflowUseCase,
-    ClassifyErrorUseCase,
-    AnalyzeCompatibilityUseCase,
-    ScoutCoordinator,
-    ActExecutor,
-    GitAutoManager,
-)
+# Application Use Cases (lazily imported under TYPE_CHECKING to prevent circular imports)
+if TYPE_CHECKING:
+    from kaos.application.use_cases import (
+        ExtractSchemaUseCase,
+        AnalyzeRequirementsUseCase,
+        DetectScopeUseCase,
+        ExecuteWorkflowUseCase,
+        ClassifyErrorUseCase,
+        AnalyzeCompatibilityUseCase,
+        ScoutCoordinator,
+        ActExecutor,
+        GitAutoManager,
+    )
 
 # Infrastructure Adapters
 from kaos.infrastructure.adapters import (
@@ -158,9 +161,11 @@ class Container:
     # --- Use Case Resolvers ---
 
     def resolve_extract_schema(self) -> ExtractSchemaUseCase:
+        from kaos.application.use_cases import ExtractSchemaUseCase
         return ExtractSchemaUseCase(gatekeeper=self.gatekeeper_adapter)
 
     def resolve_analyze_requirements(self) -> AnalyzeRequirementsUseCase:
+        from kaos.application.use_cases import AnalyzeRequirementsUseCase
         return AnalyzeRequirementsUseCase(
             llm_provider=self.llm_adapter,
             storage=self.storage_adapter,
@@ -170,6 +175,7 @@ class Container:
         )
 
     def resolve_detect_scope(self) -> DetectScopeUseCase:
+        from kaos.application.use_cases import DetectScopeUseCase
         return DetectScopeUseCase(
             llm_provider=self.llm_adapter,
             storage=self.storage_adapter,
@@ -179,6 +185,7 @@ class Container:
         )
 
     def resolve_classify_error(self) -> ClassifyErrorUseCase:
+        from kaos.application.use_cases import ClassifyErrorUseCase
         return ClassifyErrorUseCase(
             llm_provider=self.llm_adapter,
             storage=self.storage_adapter,
@@ -187,6 +194,7 @@ class Container:
         )
 
     def resolve_execute_workflow(self) -> ExecuteWorkflowUseCase:
+        from kaos.application.use_cases import ExecuteWorkflowUseCase
         return ExecuteWorkflowUseCase(
             git=self.git_adapter,
             storage=self.storage_adapter,
@@ -199,6 +207,7 @@ class Container:
         )
 
     def resolve_analyze_compatibility(self) -> AnalyzeCompatibilityUseCase:
+        from kaos.application.use_cases import AnalyzeCompatibilityUseCase
         return AnalyzeCompatibilityUseCase(
             llm_provider=self.llm_adapter,
             storage=self.storage_adapter,
@@ -216,6 +225,7 @@ class Container:
         return self._cache_adapter
 
     def resolve_scout_coordinator(self) -> ScoutCoordinator:
+        from kaos.application.use_cases import ScoutCoordinator
         return ScoutCoordinator(
             llm_provider=self.llm_adapter,
             gatekeeper=self.gatekeeper_adapter,
@@ -226,6 +236,7 @@ class Container:
         )
 
     def resolve_act_executor(self, target_path: str = "") -> ActExecutor:
+        from kaos.application.use_cases import ActExecutor
         resolved_target = target_path or (str(TARGET_PATH) if TARGET_PATH else str(Path.cwd()))
         return ActExecutor(
             llm_provider=self.llm_adapter,
@@ -240,6 +251,7 @@ class Container:
         )
 
     def resolve_git_auto_manager(self, target_path: str = "") -> GitAutoManager:
+        from kaos.application.use_cases import GitAutoManager
         resolved_target = target_path or (str(TARGET_PATH) if TARGET_PATH else str(Path.cwd()))
         return GitAutoManager(
             git=self.git_adapter,

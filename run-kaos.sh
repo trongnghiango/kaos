@@ -9,20 +9,23 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Thiết lập biến môi trường trỏ codebase đích đến STAX_ASP
-export KAOS_TARGET_PATH="$REPO_ROOT"
-export PYTHONPATH="$REPO_ROOT/tools"
+export KAOS_TARGET_PATH="$REPO_ROOT/STAX_ASP"
+export PYTHONPATH="$REPO_ROOT/kaos/src:$PYTHONPATH"
 
 # Thiết lập NODE_PATH để Node.js giải quyết các module từ backend/node_modules và hermit global
 export NODE_PATH="/home/ka/.config/goose/mcp-hermit/.hermit/node/lib/node_modules:$REPO_ROOT/backend/node_modules:$REPO_ROOT/tools/kaos/node_modules"
 
 # Kiểm tra Python Virtual Environment
 VENV_PATH="$REPO_ROOT/tools/autoresearch/python/venv"
-if [ -d "$VENV_PATH" ]; then
+KAOS_VENV="$SCRIPT_DIR/.venv"
+if [ -d "$KAOS_VENV" ]; then
+    source "$KAOS_VENV/bin/activate"
+elif [ -d "$VENV_PATH" ]; then
     source "$VENV_PATH/bin/activate"
 fi
 
 # Khởi chạy KAOS CLI với toàn bộ tham số truyền vào
-python3 "$SCRIPT_DIR/interfaces/cli.py" "$@"
+python3 "$SCRIPT_DIR/src/kaos/interfaces/cli.py" "$@"
 
 # In kết quả báo cáo nếu tồn tại ở thư mục hiện hành
 if [ -f "db_compatibility_report.md" ]; then

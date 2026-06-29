@@ -30,41 +30,77 @@ def show_status(output_csv: Path, container):
         logger.warning("⚠️ Chưa có Task Queue CSV được tạo.")
 
 
+def resolve_inputs(args, target_path: Path) -> tuple[Optional[str], Optional[str]]:
+    """
+    Resolve and route raw_data and spec inputs.
+    If the positional argument raw_data points to a text spec file (.md, .txt, .markdown),
+    and spec is not provided, we automatically route it as the spec input.
+    """
+    raw_input = args.raw_data
+    spec_input = args.spec
+
+    resolved_raw = None
+    if raw_input:
+        raw_path = Path(raw_input)
+        if raw_path.is_absolute():
+            if raw_path.exists():
+                resolved_raw = raw_path
+        else:
+            cwd_raw = (Path.cwd() / raw_path).resolve()
+            target_raw = (target_path / raw_path).resolve()
+            if cwd_raw.exists():
+                resolved_raw = cwd_raw
+            elif target_raw.exists():
+                resolved_raw = target_raw
+            else:
+                # If path doesn't exist, keep it as raw_input string for further handling
+                resolved_raw = raw_path
+
+    # Route text spec files (.md, .txt, .markdown) to spec_input if spec is not specified
+    if resolved_raw and resolved_raw.exists() and resolved_raw.is_file() and not spec_input:
+        if resolved_raw.suffix.lower() in ['.md', '.txt', '.markdown']:
+            spec_input = str(resolved_raw)
+            raw_input = None
+            resolved_raw = None
+
+    # Resolve spec path or raw text
+    resolved_spec = None
+    if spec_input:
+        spec_path = Path(spec_input)
+        if spec_path.is_absolute():
+            if spec_path.exists():
+                resolved_spec = str(spec_path)
+            else:
+                resolved_spec = spec_input  # direct text
+        else:
+            cwd_spec = (Path.cwd() / spec_path).resolve()
+            target_spec = (target_path / spec_path).resolve()
+            if cwd_spec.exists():
+                resolved_spec = str(cwd_spec)
+            elif target_spec.exists():
+                resolved_spec = str(target_spec)
+            else:
+                resolved_spec = spec_input  # direct text
+
+    resolved_raw_str = str(resolved_raw) if resolved_raw else (raw_input if raw_input else None)
+    return resolved_raw_str, resolved_spec
+
+
 async def run_pipeline(args) -> int:
     from kaos.config import TARGET_PATH, TMP_DIR, logger
     from kaos.infrastructure.di import Container
 
     start_time = time.time()
 
-    # Lấy spec và raw_data riêng biệt và giải quyết đường dẫn tương đối từ CWD của process hoặc TARGET_PATH
-    spec_input = args.spec if args.spec else None
+    raw_data_path, spec_input = resolve_inputs(args, TARGET_PATH)
+
+    # Validate file existences if they are paths
     if spec_input:
         spec_path = Path(spec_input)
-        if not spec_path.is_absolute():
-            cwd_spec_path = (Path.cwd() / spec_path).resolve()
-            target_spec_path = (TARGET_PATH / spec_path).resolve()
-            if cwd_spec_path.exists():
-                spec_input = str(cwd_spec_path)
-            elif target_spec_path.exists():
-                spec_input = str(target_spec_path)
-            elif spec_input.endswith(('.md', '.txt', '.json')) or '/' in spec_input or '\\' in spec_input:
+        if spec_input.endswith(('.md', '.txt', '.json')) or '/' in spec_input or '\\' in spec_input:
+            if not spec_path.exists():
                 logger.error(f"❌ File spec không tồn tại tại: {spec_input} (CWD: {Path.cwd()}, Target: {TARGET_PATH})")
                 return 1
-        elif not spec_path.exists():
-            logger.error(f"❌ File spec không tồn tại tại: {spec_input}")
-            return 1
-
-
-    raw_data_path = args.raw_data if args.raw_data else None
-    if raw_data_path:
-        raw_path = Path(raw_data_path)
-        if not raw_path.is_absolute():
-            cwd_raw_path = (Path.cwd() / raw_path).resolve()
-            target_raw_path = (TARGET_PATH / raw_path).resolve()
-            if cwd_raw_path.exists():
-                raw_data_path = str(cwd_raw_path)
-            elif target_raw_path.exists():
-                raw_data_path = str(target_raw_path)
 
     # Nếu `--status` hoặc `--rerun-failed` được bật mà chưa truyền gì, mock = dummy
     if args.status or args.rerun_failed:
@@ -129,21 +165,22 @@ async def run_pipeline(args) -> int:
                 report_path = str((TARGET_PATH / "tools" / "kaos" / "tmp" / "db_compatibility_report.md").resolve())
         else:
             report_path = str(report_path_obj.resolve())
-        if not raw_data_path:
-            logger.error("❌ Phân tích độ tương thích database yêu cầu đầu vào raw_data (đường dẫn file Excel .xlsx).")
+        if not raw_data_path and not spec_input:
+            logger.error("❌ Phân tích độ tương thích database yêu cầu đầu vào raw_data (đường dẫn file Excel .xlsx) hoặc spec (đặc tả nghiệp vụ).")
             return 1
         
-        # Validate raw_data path exists
-        resolved_raw_path = Path(raw_data_path).resolve()
-        if not resolved_raw_path.exists():
-            logger.error(f"❌ File raw_data không tồn tại tại: {raw_data_path}")
-            return 1
-
+        # Validate raw_data path exists if provided
+        resolved_raw_path = None
+        if raw_data_path:
+            resolved_raw_path = Path(raw_data_path).resolve()
+            if not resolved_raw_path.exists():
+                logger.error(f"❌ File raw_data không tồn tại tại: {raw_data_path}")
+                return 1
 
         comp_use_case = container.resolve_analyze_compatibility()
         try:
             await comp_use_case.execute(
-                raw_data=str(resolved_raw_path),
+                raw_data=str(resolved_raw_path) if resolved_raw_path else None,
                 spec=spec_input,
                 report_path=report_path,
                 run_dry=args.run_dry
@@ -247,27 +284,18 @@ async def run_auto_pipeline(args) -> int:
         return 0
 
     # 1. Resolve target path
-    target_path = str(TARGET_PATH) if TARGET_PATH else str(Path.cwd())
+    target_path_obj = TARGET_PATH if TARGET_PATH else Path.cwd()
+    target_path = str(target_path_obj)
 
-    # 2. Resolve spec
-    spec_input = args.spec if args.spec else None
+    # 2. Resolve raw_data and spec_input
+    raw_data, spec_input = resolve_inputs(args, target_path_obj)
     if spec_input:
         spec_path = Path(spec_input)
-        if not spec_path.is_absolute():
-            cwd_path = (Path.cwd() / spec_path).resolve()
-            if cwd_path.exists():
-                spec_input = str(cwd_path)
-        elif spec_path.exists():
-            spec_input = spec_path.read_text(encoding="utf-8")
-
-    # 3. Resolve raw_data
-    raw_data = args.raw_data if args.raw_data else None
-    if raw_data:
-        raw_path = Path(raw_data)
-        if not raw_path.is_absolute():
-            cwd_raw = (Path.cwd() / raw_path).resolve()
-            if cwd_raw.exists():
-                raw_data = str(cwd_raw)
+        if spec_path.exists():
+            try:
+                spec_input = spec_path.read_text(encoding="utf-8")
+            except Exception:
+                pass
 
     # 4. Auto-detect module nếu là "auto"
     module = args.module

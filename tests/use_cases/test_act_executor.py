@@ -125,7 +125,21 @@ def mock_cache():
 
 
 @pytest.fixture
-def executor(mock_llm, mock_gatekeeper, mock_storage, mock_cache, config, tmp_path):
+def mock_git():
+    m = AsyncMock()
+    m.stash_push.return_value = None
+    m.stash_pop.return_value = None
+    m.checkout.return_value = True
+    m.merge.return_value = (True, [])
+    m.commit_all.return_value = True
+    m.is_branch_exists.return_value = False
+    m.push.return_value = True
+    m.get_current_branch.return_value = "main"
+    return m
+
+
+@pytest.fixture
+def executor(mock_llm, mock_gatekeeper, mock_storage, mock_cache, mock_git, config, tmp_path):
     return ActExecutor(
         llm_provider=mock_llm,
         gatekeeper=mock_gatekeeper,
@@ -134,6 +148,7 @@ def executor(mock_llm, mock_gatekeeper, mock_storage, mock_cache, config, tmp_pa
         config=config,
         tmp_dir=Path(tmp_path),
         target_path="/fake/target",
+        git=mock_git,
     )
 
 

@@ -23,7 +23,7 @@ from kaos.domain.scout_results import (
     TaskComplexity,
 )
 from kaos.domain.value_objects import AgentInstruction, ExecutionConfig
-from kaos.application.ports import CachePort, GatekeeperPort, LLMProviderPort, StoragePort, KnowledgeGraphPort, NotificationPort
+from kaos.application.ports import CachePort, GatekeeperPort, LLMProviderPort, StoragePort, KnowledgeGraphPort, NotificationPort, GitPort
 from kaos.application.use_cases.classify_error import ClassifyErrorUseCase
 from kaos.config import PROJECT_ROOT
 from kaos.engine import TaskQueueEngine, FeedbackPolicy
@@ -49,6 +49,8 @@ class ActTask:
     budget: TaskBudget
     module: str
     depends_on: List[str] = field(default_factory=list)
+    status: str = "PENDING"
+    result: dict = field(default_factory=dict)
 
     @classmethod
     def from_spec_and_schema(
@@ -120,6 +122,7 @@ class ActExecutor:
         knowledge_graph: Optional[KnowledgeGraphPort] = None,
         classify_error: Optional[ClassifyErrorUseCase] = None,
         notification: Optional[NotificationPort] = None,
+        git: Optional[GitPort] = None,
     ):
         self.llm_provider = llm_provider
         self.gatekeeper = gatekeeper
@@ -130,6 +133,7 @@ class ActExecutor:
         self.target_path = target_path
         self.knowledge_graph = knowledge_graph
         self.notification = notification
+        self.git = git
 
         self.classify_error = classify_error or ClassifyErrorUseCase(
             llm_provider=self.llm_provider,
@@ -189,6 +193,7 @@ class ActExecutor:
                 enable_escalation=True,
             ),
             notification=self.notification,
+            git=self.git,
         )
         engine.load_pregenerated_tasks(tasks)
         engine._baseline_errors = baseline_errors

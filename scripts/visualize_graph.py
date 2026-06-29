@@ -211,7 +211,7 @@ def generate_visualization():
             height: 100%;
             border: none;
             background-color: #ffffff;
-        }}
+        }
         #footer {
             background-color: #f1f5f9;
             padding: 8px 24px;

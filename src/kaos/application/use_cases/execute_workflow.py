@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Tuple
 
 from kaos.domain.models import Task, Workflow, DecisionEngine, DecisionRule
 from kaos.domain.value_objects import ExecutionConfig, SessionMetadata, AgentInstruction
-from kaos.application.ports import GitPort, StoragePort, GatekeeperPort, LLMProviderPort
+from kaos.application.ports import GitPort, StoragePort, GatekeeperPort, LLMProviderPort, NotificationPort
 from kaos.application.use_cases.classify_error import ClassifyErrorUseCase
 from kaos.config import Prompts, TMP_DIR, PROJECT_ROOT
 
@@ -33,6 +33,7 @@ class ExecuteWorkflowUseCase:
         decision_engine: Optional[DecisionEngine] = None,
         tmp_dir: Optional[Path] = None,
         classify_error: Optional[ClassifyErrorUseCase] = None,
+        notification: Optional[NotificationPort] = None,
     ):
         self.git = git
         self.storage = storage
@@ -48,6 +49,7 @@ class ExecuteWorkflowUseCase:
             config=self.config,
             tmp_dir=self.tmp_dir
         )
+        self.notification = notification
 
         # Thiết lập DecisionEngine mặc định
         if decision_engine is None:

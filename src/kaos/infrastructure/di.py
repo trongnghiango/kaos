@@ -11,7 +11,7 @@ from pathlib import Path
 # Domain models/configs
 from kaos.domain.value_objects import ExecutionConfig, SessionMetadata
 # Application Ports
-from kaos.application.ports import CachePort, GitPort, StoragePort, GatekeeperPort, LLMProviderPort, KnowledgeGraphPort
+from kaos.application.ports import CachePort, GitPort, StoragePort, GatekeeperPort, LLMProviderPort, KnowledgeGraphPort, NotificationPort
 # Application Use Cases
 from kaos.application.use_cases import (
     ExtractSchemaUseCase,
@@ -36,6 +36,7 @@ from kaos.infrastructure.adapters import (
     ClaudeCodeAdapter,
     FileCacheAdapter,
     RedisGraphAdapter,
+    TelegramAdapter,
 )
 
 # Thống nhất constants từ config.py hiện hành
@@ -53,6 +54,10 @@ from kaos.config import (
     CONFIG,
     TMP_DIR,
     TARGET_PATH,
+    TELEGRAM_TOKEN,
+    TELEGRAM_CHAT_ID,
+    TELEGRAM_MONITOR_ENABLED,
+    logger,
 )
 
 
@@ -93,6 +98,19 @@ class Container:
         self.gatekeeper_adapter = TsGatekeeperAdapter()
         self.knowledge_graph = RedisGraphAdapter()
 
+        # ── Telegram Monitor ──────────────────────────────────────
+        if TELEGRAM_MONITOR_ENABLED and TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+            from kaos.application.ports import NotificationPort
+            self.telegram = TelegramAdapter(
+                token=TELEGRAM_TOKEN,
+                chat_id=TELEGRAM_CHAT_ID,
+            )
+            asyncio.ensure_future(self._register_telegram_commands())
+            logger.info("📲 Telegram monitor ENABLED")
+        else:
+            self.telegram = None
+            logger.debug("📵 Telegram monitor DISABLED (set TELEGRAM_MONITOR_ENABLED=true)")
+
         # 3. Chọn LLM provider theo priority chain:
         #    CLI arg > ENV var > runner_config.json > default "goose"
         resolved_provider = (
@@ -101,6 +119,9 @@ class Container:
             or CONFIG.get("llm", {}).get("provider", "goose")
         )
         self.llm_adapter = self._create_llm_adapter(resolved_provider)
+        # Register Telegram commands if bot is enabled
+        if self.telegram:
+            self._register_telegram_commands()
 
     def _create_llm_adapter(self, provider_name: str) -> LLMProviderPort:
         """
@@ -214,6 +235,7 @@ class Container:
             tmp_dir=self.tmp_dir,
             target_path=resolved_target,
             knowledge_graph=self.knowledge_graph,
+            notification=self.telegram,
         )
 
     def resolve_git_auto_manager(self, target_path: str = "") -> GitAutoManager:
@@ -223,3 +245,66 @@ class Container:
             storage=self.storage_adapter,
             target_path=resolved_target,
         )
+
+    # ── Telegram Monitor & Control Helpers ───────────────────────
+
+    def _register_telegram_commands(self) -> None:
+        """Đăng ký command handler cho bot Telegram để giám sát và điều khiển"""
+        if not self.telegram:
+            return
+
+        async def cmd_status(chat_id: str, args: str):
+            # Truy vấn nhanh trạng thái qua engine/container
+            # Tìm các task đang chạy trong background (nếu có lưu vết)
+            status_text = (
+                f"ℹ️ *KAOS Pipeline Status*\n"
+                f"• Session ID: `{self.session_meta.session_id}`\n"
+                f"• Module: `{self.target_module}`\n"
+                f"• Target branch: `{self.session_meta.branch_name}`\n"
+            )
+            # Thống kê từ Graph
+            try:
+                stats = await self.knowledge_graph.get_graph_stats()
+                status_text += (
+                    f"• Graph Nodes: Tasks={stats['tasks']}, Conditions={stats['conditions']}, Results={stats['results']}\n"
+                )
+            except Exception as e:
+                status_text += f"• Graph Error: {e}\n"
+
+            await self.telegram.send_message(status_text)
+
+        async def cmd_kill(chat_id: str, args: str):
+            target_task = args.strip()
+            if not target_task:
+                await self.telegram.send_message("❌ Vui lòng cung cấp task_id (Ví dụ: `/kill T1`)")
+                return
+
+            # Lưu ý: Sẽ liên kết trực tiếp tới active task list trong TaskQueueEngine qua Global/Active engine references
+            # Hiện tại gửi tín hiệu dừng thông qua Redis (như một Duyên - feedback: user_terminated)
+            try:
+                await self.knowledge_graph.upsert_condition(
+                    cond_id=f"cond_kill_{target_task}_{int(time.time())}",
+                    type="feedback",
+                    content=f"FORCE_TERMINATED: Lệnh dừng từ Telegram.",
+                )
+                # Đánh dấu Task thất bại ngay lập tức để vòng lặp tiếp theo dừng
+                await self.telegram.send_message(f"🛑 Đã gửi lệnh tắt nóng task `{target_task}` lên Redis.")
+            except Exception as e:
+                await self.telegram.send_message(f"❌ Lỗi gửi lệnh: {e}")
+
+        async def cmd_killall(chat_id: str, args: str):
+            # Gửi tín hiệu dừng toàn bộ pipeline
+            try:
+                await self.knowledge_graph.upsert_condition(
+                    cond_id=f"cond_killall_{int(time.time())}",
+                    type="feedback",
+                    content="FORCE_TERMINATED_ALL: Lệnh dừng toàn bộ hệ thống.",
+                )
+                await self.telegram.send_message("🛑 Đã phát lệnh DỪNG TOÀN BỘ tiến trình đang chạy.")
+            except Exception as e:
+                await self.telegram.send_message(f"❌ Lỗi: {e}")
+
+        self.telegram.register_command("status", cmd_status)
+        self.telegram.register_command("kill", cmd_kill)
+        self.telegram.register_command("killall", cmd_killall)
+        logger.info("   🤖 Telegram commands registered: /status, /kill, /killall")

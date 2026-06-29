@@ -44,7 +44,7 @@ from kaos.domain.scout_results import (
 )
 from kaos.domain.value_objects import AgentInstruction
 from kaos.engine.execution_policy import FeedbackPolicy
-from kaos.application.ports import LLMProviderPort, GatekeeperPort, StoragePort, KnowledgeGraphPort
+from kaos.application.ports import LLMProviderPort, GatekeeperPort, StoragePort, KnowledgeGraphPort, NotificationPort
 from kaos.domain.models import Task, DecisionEngine, DecisionRule
 
 # Import Sandbox Facade — fallback an toàn
@@ -135,6 +135,7 @@ class TaskQueueEngine:
         knowledge_graph: Optional[KnowledgeGraphPort] = None,
         feedback_policy: Optional[FeedbackPolicy] = None,
         classify_error: Optional[Any] = None,
+        notification: Optional[NotificationPort] = None,
     ):
         self.report = report
         self.queue_file = Path(queue_file) if queue_file else None
@@ -148,6 +149,8 @@ class TaskQueueEngine:
         self.execution_log: List[dict] = []
         self._stats = {"total": 0, "completed": 0, "failed": 0, "skipped": 0}
         self._baseline_errors: Optional[dict] = None
+        self.notification = notification
+        self._active_async_tasks: Dict[str, asyncio.Task] = {}  # Theo dõi task đang chạy để hỗ trợ /kill
 
         # Resolve ports with lazy imports to prevent circular references
         self.llm_provider = self._resolve_llm_provider(llm_provider)
@@ -1148,6 +1151,18 @@ class TaskQueueEngine:
                 attempt_count += 1
                 logger.info(f"   🔄 [{task.task_id}] Fix attempt {fix_i}/{max_fix}")
 
+                # Telegram alert khi AutoFixer thử lại nhiều lần (ví dụ: từ lần 3 trở đi)
+                if fix_i >= 3 and self.notification:
+                    await self.notification.send_alert(
+                        title=f"AutoFixer Cảnh báo: Task {task.task_id} đang thử lại lần {fix_i}",
+                        details=(
+                            f"Task: {task.title}\n"
+                            f"Lỗi hiện tại: {feedback_msg[:300]}\n"
+                            f"Hệ thống đang tiếp tục tự sửa lỗi."
+                        ),
+                        level="WARNING"
+                    )
+
                 fix_budget = TaskBudget(
                     task_id=task.task_id,
                     complexity=budget.complexity,
@@ -1193,6 +1208,18 @@ class TaskQueueEngine:
                 f"   ⚠️ [{task.task_id}] AutoFixer failed after {max_fix}. "
                 f"Escalating with {self.feedback_policy.escalate_turns}-turn coder..."
             )
+            
+            # Telegram alert khi phải leo thang (Escalation)
+            if self.notification:
+                await self.notification.send_alert(
+                    title=f"Leo thang (Escalation): Task {task.task_id} bị lỗi nặng",
+                    details=(
+                        f"Task: {task.title}\n"
+                        f"AutoFixer đã thử sửa {max_fix} lần nhưng không thành công.\n"
+                        f"Đang kích hoạt Escalation Coder ({self.feedback_policy.escalate_turns} turns)."
+                    ),
+                    level="ERROR"
+                )
 
             escalate_budget = TaskBudget(
                 task_id=task.task_id,
@@ -1245,6 +1272,13 @@ class TaskQueueEngine:
             return True
 
         logger.info(f"   ⏳  [{task.task_id}] Executing: {task.title}")
+        
+        # Ghi nhận active asyncio task
+        current_async_task = asyncio.current_task()
+        self._active_async_tasks[task.task_id] = current_async_task
+
+        if self.notification:
+            await self.notification.send_message(f"⏳ *[KAOS]* Bắt đầu thực thi Task `{task.task_id}`: {task.title}")
 
         # Build context file (file-based, backward compat)
         task_ctx = self._build_task_context(task)
@@ -1254,38 +1288,61 @@ class TaskQueueEngine:
         # Upsert into Knowledge Graph (Nhân-Duyên-Quả)
         await self._upsert_task_context(task, task_ctx)
 
-        # Planner (first-attempt only)
-        plan_file = self.tmp_dir / f"plan_{task.task_id}.json"
-        await self._run_planner(task_ctx_file, plan_file)
+        try:
+            # Planner (first-attempt only)
+            plan_file = self.tmp_dir / f"plan_{task.task_id}.json"
+            await self._run_planner(task_ctx_file, plan_file)
 
-        tactical_plan = ""
-        if plan_file.exists():
-            try:
-                plan_data = json.loads(plan_file.read_text())
-                tactical_plan = self._generate_tactical_plan(plan_data)
-            except Exception:
-                pass
+            tactical_plan = ""
+            if plan_file.exists():
+                try:
+                    plan_data = json.loads(plan_file.read_text())
+                    tactical_plan = self._generate_tactical_plan(plan_data)
+                except Exception:
+                    pass
 
-        # Feedback loop (AutoFixer + Escalation)
-        result = await self._feedback_loop(task, self._baseline_errors, tactical_plan)
-        task.result = result
+            # Feedback loop (AutoFixer + Escalation)
+            result = await self._feedback_loop(task, self._baseline_errors, tactical_plan)
+            task.result = result
 
-        if result.get("success", False):
-            task.status = "SUCCESS"
-            self._stats["completed"] += 1
-            self._save_queue_status()
-            logger.info(f"   ✅  [{task.task_id}] All checks PASSED")
-            return True
-        elif result.get("skipped", False):
-            self._save_queue_status()
-            logger.info(f"   ✅  [{task.task_id}] Skipped by classifier")
-            return True
-        else:
+            if result.get("success", False):
+                task.status = "SUCCESS"
+                self._stats["completed"] += 1
+                self._save_queue_status()
+                logger.info(f"   ✅  [{task.task_id}] All checks PASSED")
+                if self.notification:
+                    await self.notification.send_message(f"✅ *[KAOS]* Task `{task.task_id}` thành công!")
+                return True
+            elif result.get("skipped", False):
+                self._save_queue_status()
+                logger.info(f"   ✅  [{task.task_id}] Skipped by classifier")
+                if self.notification:
+                    await self.notification.send_message(f"⏭️ *[KAOS]* Task `{task.task_id}` được skip.")
+                return True
+            else:
+                task.status = "FAILED"
+                self._stats["failed"] += 1
+                self._save_queue_status()
+                logger.error(f"   ⛔ Task {task.task_id} failed.")
+                if self.notification:
+                    await self.notification.send_alert(
+                        title=f"Task {task.task_id} FAILED",
+                        details=f"Task: {task.title}\nModule: {task.module}\nError: {result.get('error', 'Unknown failure')}",
+                        level="ERROR"
+                    )
+                return False
+        except asyncio.CancelledError:
             task.status = "FAILED"
+            task.result = {"success": False, "error": "Force terminated by user command via Telegram."}
             self._stats["failed"] += 1
             self._save_queue_status()
-            logger.error(f"   ⛔ Task {task.task_id} failed.")
-            return False
+            logger.warning(f"   🛑 Task {task.task_id} was CANCELLED/KILLED by Telegram command.")
+            if self.notification:
+                await self.notification.send_message(f"🛑 *[KAOS]* Task `{task.task_id}` đã bị DỪNG NÓNG theo yêu cầu người dùng.")
+            raise
+        finally:
+            self._active_async_tasks.pop(task.task_id, None)
+
 
     # ────────────── 5. EXECUTE LEVEL ──────────────────────────────
 

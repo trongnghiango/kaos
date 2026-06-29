@@ -268,3 +268,22 @@ class CachePort(ABC):
     def hash_codebase(self, target_path: str) -> str:
         """Tạo hash từ codebase để phát hiện thay đổi. Có thể skip nếu không có cache."""
         pass
+
+
+class NotificationPort(ABC):
+    """Port hỗ trợ gửi thông báo giám sát và điều khiển từ xa (Telegram, Slack, etc.)"""
+
+    @abstractmethod
+    async def send_message(self, text: str) -> None:
+        """Gửi thông báo văn bản (Telegram text)"""
+        pass
+
+    @abstractmethod
+    async def send_alert(self, title: str, details: str, level: str = "WARNING") -> None:
+        """Gửi cảnh báo lỗi nghiêm trọng hoặc treo luồng"""
+        pass
+
+    @abstractmethod
+    def register_command(self, command: str, handler) -> None:
+        """Đăng ký command (ví dụ /kill, /status) với callback handler"""
+        pass

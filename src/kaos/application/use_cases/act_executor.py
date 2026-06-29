@@ -23,7 +23,7 @@ from kaos.domain.scout_results import (
     TaskComplexity,
 )
 from kaos.domain.value_objects import AgentInstruction, ExecutionConfig
-from kaos.application.ports import CachePort, GatekeeperPort, LLMProviderPort, StoragePort, KnowledgeGraphPort
+from kaos.application.ports import CachePort, GatekeeperPort, LLMProviderPort, StoragePort, KnowledgeGraphPort, NotificationPort
 from kaos.application.use_cases.classify_error import ClassifyErrorUseCase
 from kaos.config import PROJECT_ROOT
 from kaos.engine import TaskQueueEngine, FeedbackPolicy
@@ -119,6 +119,7 @@ class ActExecutor:
         target_path: str,
         knowledge_graph: Optional[KnowledgeGraphPort] = None,
         classify_error: Optional[ClassifyErrorUseCase] = None,
+        notification: Optional[NotificationPort] = None,
     ):
         self.llm_provider = llm_provider
         self.gatekeeper = gatekeeper
@@ -128,6 +129,7 @@ class ActExecutor:
         self.tmp_dir = tmp_dir
         self.target_path = target_path
         self.knowledge_graph = knowledge_graph
+        self.notification = notification
 
         self.classify_error = classify_error or ClassifyErrorUseCase(
             llm_provider=self.llm_provider,
@@ -186,6 +188,7 @@ class ActExecutor:
                 escalate_turns=BUDGET_ESCALATE,
                 enable_escalation=True,
             ),
+            notification=self.notification,
         )
         engine.load_pregenerated_tasks(tasks)
         engine._baseline_errors = baseline_errors

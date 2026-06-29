@@ -151,6 +151,13 @@ CONFIG = load_runner_config()
 EXECUTION_CONF = CONFIG.get("execution", {})
 PATHS_CONF = CONFIG.get("paths", {})
 
+# ==========================================
+# TELEGRAM MONITOR CONFIG
+# ==========================================
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+TELEGRAM_MONITOR_ENABLED = os.environ.get("TELEGRAM_MONITOR_ENABLED", "false").lower() == "true"
+
 # Constants
 MAX_RETRIES_CODER = EXECUTION_CONF.get("max_retries_coder", 5)
 MAX_RETRIES_PLANNER = EXECUTION_CONF.get("max_retries_planner", 3)

@@ -287,6 +287,12 @@ async def run_auto_pipeline(args) -> int:
     target_path_obj = TARGET_PATH if TARGET_PATH else Path.cwd()
     target_path = str(target_path_obj)
 
+    # Force set config target path to ensure correct global TMP_DIR, logs etc.
+    from kaos.config import set_target_path
+    set_target_path(target_path)
+    # Re-import TMP_DIR to get the target project specific temp directory
+    from kaos.config import TMP_DIR
+
     # 2. Resolve raw_data and spec_input
     raw_data, spec_input = resolve_inputs(args, target_path_obj)
     if spec_input:
@@ -350,6 +356,18 @@ async def run_auto_pipeline(args) -> int:
             f"confidence={report.confidence_level}"
         )
 
+        # Cache the report to KAOS_WORK_DIR/scout_report.json
+        from kaos.config import KAOS_WORK_DIR
+        cached_report_path = KAOS_WORK_DIR / "scout_report.json"
+        try:
+            import json
+            import dataclasses
+            report_dict = report.to_dict() if hasattr(report, "to_dict") else dataclasses.asdict(report)
+            cached_report_path.write_text(json.dumps(report_dict, indent=2, ensure_ascii=False), encoding="utf-8")
+            logger.info(f"   💾 Cached ScoutReport to {cached_report_path}")
+        except Exception as e:
+            logger.warning(f"   ⚠️ Failed to cache ScoutReport: {e}")
+
         # If --phase scout, exit after scout
         if phase == "scout":
             elapsed = time.time() - start_time
@@ -357,19 +375,34 @@ async def run_auto_pipeline(args) -> int:
             return 0
     else:
         # --phase act: load cached ScoutReport from file
-        from kaos.domain.scout_results import ScoutReport
-        cached_report_path = TMP_DIR / "scout_report.json"
+        from kaos.domain.scout_results import ScoutReport, ConflictPoint, ConflictType, ConflictSeverity
+        from kaos.config import KAOS_WORK_DIR
+        cached_report_path = KAOS_WORK_DIR / "scout_report.json"
         if cached_report_path.exists():
             import json
             try:
                 data = json.loads(cached_report_path.read_text())
+                
+                # Deserialise conflict_points dict to ConflictPoint objects
+                cps = []
+                for cp_dict in data.get("conflict_points", []):
+                    cps.append(ConflictPoint(
+                        conflict_type=ConflictType(cp_dict["conflict_type"]),
+                        severity=ConflictSeverity(cp_dict["severity"]),
+                        description=cp_dict["description"],
+                        suggestion=cp_dict.get("suggestion", ""),
+                        location=cp_dict.get("location", ""),
+                        source=cp_dict.get("source", "raw_data")
+                    ))
+                data["conflict_points"] = cps
+                
                 report = ScoutReport(**data)
                 logger.info(f"   ✅ Loaded cached ScoutReport from {cached_report_path}")
             except Exception as e:
                 logger.error(f"❌ Cannot load cached ScoutReport: {e}. Run scout first.")
                 return 1
         else:
-            logger.error("❌ No cached ScoutReport found. Run `kaos --auto --phase scout` first.")
+            logger.error(f"❌ No cached ScoutReport found: {cached_report_path}. Run `kaos --auto --phase scout` first.")
             return 1
 
     # 7. Act Phase
@@ -445,8 +478,15 @@ def main():
             target_path = arg.split("=", 1)[1]
             break
 
+    # Also check environmental variable if CLI flag is not present
+    if not target_path:
+        target_path = os.environ.get("KAOS_TARGET_PATH")
+
     if target_path:
         os.environ["KAOS_TARGET_PATH"] = str(Path(target_path).resolve())
+        # Force re-initialization of configuration paths based on target path
+        from kaos.config import set_target_path
+        set_target_path(target_path)
 
     # Bây giờ mới import config và logger an toàn
     from kaos.config import logger
@@ -478,7 +518,7 @@ def main():
     )
     parser.add_argument(
         "--phase",
-        choices=["all", "extract", "analyze", "execute"],
+        choices=["all", "extract", "analyze", "execute", "scout", "act"],
         default="all",
         help="Chạy một phase cụ thể trong pipeline",
     )

@@ -1,51 +1,32 @@
-# BÀN GIAO DỰ ÁN KAOS — LẦN 10 (Hoàn tất sửa lỗi & Chuẩn bị chạy thử trên STAX_ASP)
+# HANDOFF — PHIÊN LÀM VIỆC NGÀY 2026-06-30 (12:09)
 
-> **Thời gian:** 2026-06-29 — 13:55  
-> **Thư mục dự án:** `/home/ka/Repos/github.com/trongnghiango/kaos`  
-> **Trạng thái:** Đã fix thành công 105/105 tests (xanh toàn bộ), sửa CLI routing, cập nhật kịch bản runner.
+## 1. Trạng thái hiện tại
+*   **Mã nguồn KAOS (Orchestrator)**: Đang ở nhánh `develop`.
+*   **Mã nguồn STAX_ASP (Target Project)**: Đang ở nhánh `main` sạch (working tree clean).
+*   **Git Remote**: Nhánh `kaos/auto-system-20260630_115211-spec--tách-packages-` chứa ký tự tiếng Việt có dấu (`á` trong `tách`) trên GitHub đã gây ra lỗi. Nhánh này cần được đổi tên hoặc thay thế bằng nhánh đã được ASCII hóa sạch sẽ.
+*   **Phân loại cấu trúc (Linux Standard)**: Đã chuyển toàn bộ thư mục `.kaos` (chứa cấu hình, cache, logs, tmp) ra khỏi các thư mục làm việc và đưa về thư mục home của user: `~/.kaos/<target_project_name>/` (ví dụ: `~/.kaos/STAX_ASP/`). Điều này đảm bảo sự rõ ràng, sạch sẽ và ngăn nắp tuyệt đối.
 
----
+## 2. Các thay đổi và lỗi đã được sửa trong phiên này
+1.  **Sửa lỗi Branch Name chứa ký tự tiếng Việt có dấu (Diacritics)**:
+    *   Cập nhật `_sanitize_branch_name` trong `src/kaos/application/use_cases/git_auto_manager.py` sử dụng thư viện `unicodedata` để chuyển đổi toàn bộ ký tự Unicode (tiếng Việt có dấu) sang ASCII tương ứng (ví dụ: `tách` -> `tach`, `Đ/đ` -> `D/d`), loại bỏ các ký tự thừa và dấu gạch ngang trùng lặp (`--` -> `-`).
+    *   Điều này triệt tiêu hoàn toàn lỗi push nhánh hoặc tạo Pull Request lỗi ký tự đặc biệt trên GitHub.
+2.  **Lỗi CLI choices**: Cập nhật CLI parser trong `src/kaos/interfaces/cli.py` để chấp nhận lựa chọn `--phase scout` và `--phase act` khi chạy ở chế độ `--auto`.
+3.  **Cấu trúc thư mục `.kaos`**: 
+    *   Chỉnh sửa `src/kaos/config.py` để tính toán lại `work_dir` và `tmp_dir` dưới thư mục `~/.kaos/<project_name>`.
+    *   Cập nhật `src/kaos/infrastructure/adapters/cache_adapter.py` để sử dụng `config.KAOS_WORK_DIR / "cache"`.
+    *   Cập nhật các assertion trong `tests/test_standalone.py` để kiểm thử cơ chế cấu trúc thư mục mới này.
+4.  **Lỗi thư mục làm việc Git trong Task Queue Engine**:
+    *   Sửa lỗi trong `src/kaos/engine/task_queue_engine.py` (hàm `_cleanup_branch` gọi lệnh git đồng bộ mà không định nghĩa `cwd`, dẫn đến việc các thao tác rollback/stash_pop/checkout chạy nhầm trên thư mục hiện hành của tiến trình `kaos` thay vì dự án mục tiêu `STAX_ASP`). 
+    *   Đã cập nhật toàn bộ lệnh `run_command` trong `_cleanup_branch` truyền rõ tham số `cwd=str(TARGET_PATH)`.
 
-## 🛠️ Những công việc ĐÃ HOÀN THÀNH trong phiên này
+## 3. Điểm nghẽn hiện tại (Bottlenecks) & Nhiệm vụ cho phiên tiếp theo
+Khi chạy chế độ auto-refactor trên `STAX_ASP`:
+`export KAOS_TARGET_PATH="/home/ka/Repos/github.com/trongnghiango/STAX_ASP" && kaos /home/ka/Repos/github.com/trongnghiango/STAX_ASP/refactor-extract-packages.spec.md --auto --phase all --force-act`
+*   Hệ thống sinh ra **55 tasks** nghiệp vụ.
+*   Tuy nhiên, đồ thị DAG (Topological Sort) thông qua Knowledge Graph chỉ sắp xếp 55 tasks này thành **1 level duy nhất** (`Level 0` chứa duy nhất task `FIX_001`).
+*   Do đó, sau khi `FIX_001` (Sửa `pnpm-workspace.yaml`) chạy xong thành công và pass Gatekeeper, engine tự động kết thúc pipeline và báo cáo thành công mà không chạy tiếp các task từ `FIX_002` đến `FIX_055`.
+*   **Nhiệm vụ trọng tâm**: Điều tra nguyên nhân tại sao `RedisGraphAdapter.calculate_levels()` hoặc `TaskQueueEngine` chỉ phân phối duy nhất 1 task vào level thay vì tạo cấu trúc thứ tự thực thi chính xác cho cả 55 tasks.
 
-1. **Sửa lỗi Test Suite (`pytest` xanh 105/105)**:
-   - Thêm `status` và `result` vào dataclass `ActTask` trong `src/kaos/application/use_cases/act_executor.py` để tránh lỗi `AttributeError`.
-   - Mock hoàn toàn cổng `GitPort` (sử dụng `mock_git` fixture) trong `tests/use_cases/test_act_executor.py` để ngăn test suite tự động chạy lệnh git thật (stash, checkout...) trên repository gốc.
-   - Sửa decorator `@pytest.mark.asyncio` cho `test_telegram_polling` trong `tests/test_telegram.py`.
-
-2. **Cơ chế routing CLI thông minh (`cli.py`)**:
-   - Viết helper `resolve_inputs` tự động chuyển đổi file spec văn bản dạng Markdown (`.md`, `.txt`, `.markdown`) truyền qua positional argument (`raw_data`) sang tham số `--spec`. 
-   - Giờ đây, khi gõ `./run-kaos.sh <file-spec.md>`, KAOS sẽ hiểu đó là file đặc tả nghiệp vụ (Spec), thay vì cố đọc như file Excel database thô và văng lỗi.
-
-3. **Cập nhật script điều khiển chính (`run-kaos.sh`)**:
-   - Sửa biến môi trường `KAOS_TARGET_PATH` trỏ chuẩn xác đến thư mục codebase đích `/home/ka/Repos/github.com/trongnghiango/STAX_ASP`.
-   - Tự động kích hoạt `.venv` cục bộ bên trong thư mục `/kaos` nếu tồn tại, trước khi fallback sang môi trường chung.
-   - Gọi đúng file CLI mới: `src/kaos/interfaces/cli.py`.
-
-4. **Sửa lỗi Sắp xếp Level DAG (Topological Sort)**:
-   - Trong `task_queue_engine.py`, cập nhật kiểm tra `if self.level_groups:` thay vì `if levels:` để tự động fallback sang cơ chế sắp xếp bộ nhớ trong (in-memory sort) khi RedisGraph trả về tập hợp trống hoặc không khớp.
-
----
-
-## 📌 Các bước tiếp theo cần thực hiện khi về nhà
-
-1. **Khắc phục lỗi bắt buộc Excel khi Dry-run**:
-   - Hiện tại, nếu chạy Dry-run (`--run-dry` hoặc chế độ tự động phân tích độ tương thích) mà không truyền file Excel `.xlsx`, CLI sẽ báo lỗi:
-     `❌ Phân tích độ tương thích database yêu cầu đầu vào raw_data (đường dẫn file Excel .xlsx).`
-   - Cần tinh chỉnh trong `cli.py` để nếu chỉ có Spec Markdown thì bỏ qua kiểm tra database Excel hoặc chạy chế độ phân tích chay (spec-only analysis).
-
-2. **Chạy thực tế kiểm thử tích hợp trên STAX_ASP**:
-   - Di chuyển vào `/home/ka/Repos/github.com/trongnghiango/kaos`.
-   - Chạy lệnh sau để kiểm tra luồng phân tích Spec:
-     ```bash
-     ./run-kaos.sh /home/ka/Repos/github.com/trongnghiango/STAX_ASP/refactor-extract-packages.spec.md
-     ```
-
-3. **Hiện thực hóa ADR-002 (RedisGraph & Memory Routing)**:
-   - Theo dõi thiết kế "Nhân - Duyên - Quả" trong `docs/adr/ADR-002_redisgraph-memory-aware-routing.md` để triển khai `KnowledgeGraphPort` sử dụng RedisGraph thay thế lưu trữ file JSON tạm nhằm tiết kiệm tokens (tận dụng Prompt Caching) và tối ưu hóa hiệu năng.
-
----
-
-## ⚠️ Lưu ý an toàn môi trường
-* **Không quét hoặc sửa đổi bất kỳ file nào ngoài phạm vi của thư mục dự án `/home/ka/Repos/github.com/trongnghiango/kaos`** để tránh làm lộn xộn môi trường của host.
-* Khi cấu hình/chạy CLI, toàn bộ log và file tạm sẽ được gom vào thư mục `.kaos/tmp` nội bộ.
+## 4. Gợi ý tiếp cận & Git Protocol
+1.  **Phân tích graph**: Hãy kiểm tra dữ liệu quan hệ task được nạp vào RedisGraph hoặc graph in-memory để xem các task sau `FIX_001` có được liên kết đúng hay không (check các depends_on trong spec).
+2.  **Đảm bảo tuân thủ nguyên tắc Git (Git Guardian)**: Nhánh cách ly `kaos/auto-...` (đã được ASCII hóa sạch sẽ dạng `kaos/auto-system-20260630_115211-spec-tach-packages`) được tự động push lên remote để người dùng tự tay tạo PR, **cấm tự ý merge** trực tiếp vào `main`.

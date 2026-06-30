@@ -193,13 +193,23 @@ class GitAutoManager:
 
     @staticmethod
     def _sanitize_branch_name(name: str) -> str:
-        """Sanitize string for git branch name."""
+        """Sanitize string for git branch name and convert Vietnamese diacritics to ASCII."""
         if not name:
             return ""
+        import unicodedata
+        import re
+        
+        # Replace specific Vietnamese character Đ/đ
+        name = name.replace("đ", "d").replace("Đ", "D")
+        # Normalize to strip diacritics (remove accents)
+        normalized = unicodedata.normalize("NFKD", name)
+        ascii_str = normalized.encode("ascii", "ignore").decode("ascii")
         # Only keep alphanumeric, dots, dashes, underscores
-        sanitized = "".join(c if c.isalnum() or c in ".-_" else "-" for c in name)
+        sanitized = "".join(c if c.isalnum() or c in ".-_" else "-" for c in ascii_str)
         # Lowercase
         sanitized = sanitized.lower().strip("-.")
+        # Replace multiple consecutive dashes with a single dash
+        sanitized = re.sub(r"-+", "-", sanitized)
         return sanitized[:50]
 
     async def _git_pull(self) -> None:

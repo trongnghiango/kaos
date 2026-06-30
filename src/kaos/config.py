@@ -34,14 +34,16 @@ def generate_session_id() -> str:
 SESSION_ID = generate_session_id()
 
 def get_tmp_dir(session_id: str) -> Path:
-    """Lấy thư mục tạm động dựa trên Session ID"""
-    tmp_dir = TARGET_PATH / ".kaos" / "tmp" / session_id
+    """Lấy thư mục tạm động dựa trên Session ID trong thư mục home"""
+    project_name = TARGET_PATH.name or "default"
+    tmp_dir = Path.home() / ".kaos" / project_name / "tmp" / session_id
     tmp_dir.mkdir(parents=True, exist_ok=True)
     return tmp_dir
 
 def _resolve_dirs(target_path: Path) -> tuple[Path, Path, Path, Path]:
     """Tính toán lại các thư mục làm việc dựa trên target_path hiện tại."""
-    work_dir = target_path / ".kaos"
+    project_name = target_path.name or "default"
+    work_dir = Path.home() / ".kaos" / project_name
     tmp_dir = work_dir / "tmp" / SESSION_ID
     log_dir = work_dir / "logs"
     log_file = log_dir / f"pipeline_{SESSION_ID}.log"

@@ -1357,15 +1357,21 @@ class TaskQueueEngine:
 
     # ────────────── 5. EXECUTE LEVEL ──────────────────────────────
 
-    async def _execute_level(self, level: int, tasks: List[Task]) -> bool:
-        """Execute all tasks in a level in parallel."""
+    async def _execute_level(self, level: int, tasks: List[Task], parallel_workers: int = 5) -> bool:
+        """Execute all tasks in a level in parallel with a concurrency limit."""
         logger.info(f"\n{'='*60}")
-        logger.info(f"⚡ Level {level}: {len(tasks)} tasks (parallel)")
+        logger.info(f"⚡ Level {level}: {len(tasks)} tasks (parallel limit: {parallel_workers})")
         logger.info(f"{'='*60}")
 
         session_name = f"level-{level}"
+        sem = asyncio.Semaphore(parallel_workers)
+
+        async def sem_task(task):
+            async with sem:
+                return await self._execute_single_task(session_name, task)
+
         results = await asyncio.gather(
-            *[self._execute_single_task(session_name, task) for task in tasks],
+            *[sem_task(task) for task in tasks],
             return_exceptions=True,
         )
 
@@ -1519,7 +1525,7 @@ class TaskQueueEngine:
             for level in sorted(self.level_groups.keys()):
                 tasks = self.level_groups[level]
                 try:
-                    level_success = await self._execute_level(level, tasks)
+                    level_success = await self._execute_level(level, tasks, parallel_workers)
                 except Exception as e:
                     logger.error(f"Unexpected error running level {level}: {e}", exc_info=True)
                     level_success = False

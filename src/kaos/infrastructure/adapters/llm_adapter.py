@@ -54,8 +54,19 @@ class GooseCliAdapter(LLMProviderPort):
     async def run_agent(self, instruction: AgentInstruction) -> Tuple[int, str]:
         env_override = os.environ.copy()
         env_override["PWD"] = str(config.TARGET_PATH)
+        
+        # Clean mcp-hermit from PATH to prevent tool hijacking
+        path_val = env_override.get("PATH", "")
+        if path_val:
+            path_parts = path_val.split(os.pathsep)
+            cleaned_parts = [p for p in path_parts if "mcp-hermit" not in p]
+            env_override["PATH"] = os.pathsep.join(cleaned_parts)
+            logger.debug(f"🧹 Cleaned mcp-hermit from PATH for Goose Agent run. Original: {len(path_parts)} parts, Cleaned: {len(cleaned_parts)} parts")
+
         exit_code = 0
         output_log = ""
+        stderr_log = ""
+        exception_msg = ""
 
         instruction_text = self._build_instruction_text(instruction)
 
@@ -78,6 +89,7 @@ class GooseCliAdapter(LLMProviderPort):
             returncode = proc.returncode if hasattr(proc, "returncode") else 0
             exit_code = returncode
             output_log = proc.stdout.strip() if hasattr(proc, "stdout") and proc.stdout else ""
+            stderr_log = proc.stderr.strip() if hasattr(proc, "stderr") and proc.stderr else ""
 
             if returncode != 0:
                 logger.warning(f"      ⚠️ [Goose Agent] Exited with code {returncode}")
@@ -89,10 +101,47 @@ class GooseCliAdapter(LLMProviderPort):
             )
             exit_code = -1
             output_log = "TIMEOUT"
+            exception_msg = f"TIMEOUT: {str(timeout_err)}"
 
         except Exception as e:
             logger.error(f"      ❌ [Goose Agent] Lỗi: {e}")
             exit_code = -2
             output_log = str(e)
+            exception_msg = f"EXCEPTION: {str(e)}"
+
+        finally:
+            try:
+                task_id = "unknown_task"
+                if instruction.task_context and isinstance(instruction.task_context, dict):
+                    task_id = instruction.task_context.get("task_id", "unknown_task")
+                
+                log_filename = f"agent_{instruction.skill_name}_{task_id}_{config.SESSION_ID}.log"
+                log_filepath = config.LOG_DIR / log_filename
+                
+                log_content = (
+                    f"=========================================\n"
+                    f"AGENT INSTRUCTION\n"
+                    f"=========================================\n"
+                    f"{instruction_text}\n\n"
+                    f"=========================================\n"
+                    f"EXECUTION STATUS\n"
+                    f"=========================================\n"
+                    f"Exit Code: {exit_code}\n"
+                    f"Exception/Timeout Details: {exception_msg if exception_msg else 'None'}\n\n"
+                    f"=========================================\n"
+                    f"STDOUT LOG\n"
+                    f"=========================================\n"
+                    f"{output_log}\n\n"
+                    f"=========================================\n"
+                    f"STDERR LOG\n"
+                    f"=========================================\n"
+                    f"{stderr_log}\n"
+                )
+                
+                with open(log_filepath, "w", encoding="utf-8") as log_file:
+                    log_file.write(log_content)
+                logger.info(f"💾 Saved Goose Agent log to: {log_filepath}")
+            except Exception as log_err:
+                logger.error(f"⚠️ Không thể lưu log của Goose Agent: {log_err}")
 
         return exit_code, output_log

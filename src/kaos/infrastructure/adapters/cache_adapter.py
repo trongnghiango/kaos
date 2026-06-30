@@ -12,17 +12,18 @@ from pathlib import Path
 from typing import Optional
 
 from kaos.application.ports import CachePort
+import kaos.config as config
 
 
 class FileCacheAdapter(CachePort):
     """
     Cache adapter dùng file JSON.
-    Mỗi cache entry là một file .json trong thư mục .kaos/cache/.
+    Mỗi cache entry là một file .json trong thư mục ~/.kaos/<project>/cache/.
     Key là hash string, value là dict được serialize thành JSON.
     """
 
     def __init__(self, cache_dir: Optional[Path] = None):
-        self._cache_dir = cache_dir or Path.cwd() / ".kaos" / "cache"
+        self._cache_dir = cache_dir or config.KAOS_WORK_DIR / "cache"
 
     def _resolve_path(self, key: str) -> Path:
         return self._cache_dir / f"{key}.json"

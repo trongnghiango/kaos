@@ -478,9 +478,9 @@ def main():
     )
     parser.add_argument(
         "--phase",
-        choices=["all", "extract", "analyze", "execute"],
+        choices=["all", "extract", "analyze", "execute", "scout", "act"],
         default="all",
-        help="Chạy một phase cụ thể trong pipeline",
+        help="Chạy một phase cụ thể trong pipeline (hỗ trợ cả scout và act khi dùng --auto)",
     )
     parser.add_argument(
         "--status",

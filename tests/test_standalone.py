@@ -43,10 +43,12 @@ class TestKaosStandaloneIsolation(unittest.TestCase):
             config.set_target_path(self.target_path)
             
             self.assertEqual(config.TARGET_PATH, self.target_path)
-            self.assertEqual(config.KAOS_WORK_DIR, self.target_path / ".kaos")
+            project_name = self.target_path.name or "default"
+            expected_work_dir = Path.home() / ".kaos" / project_name
+            self.assertEqual(config.KAOS_WORK_DIR, expected_work_dir)
             self.assertTrue(config.TMP_DIR.exists())
             self.assertTrue(config.LOG_DIR.exists())
-            self.assertEqual(config.RUNNER_CONFIG_FILE, self.target_path / ".kaos" / "runner_config.json")
+            self.assertEqual(config.RUNNER_CONFIG_FILE, expected_work_dir / "runner_config.json")
         finally:
             # Khôi phục trạng thái ban đầu để tránh ảnh hưởng test khác
             config.set_target_path(original_target)

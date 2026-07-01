@@ -47,6 +47,7 @@ from kaos.engine.execution_policy import FeedbackPolicy
 from kaos.application.ports import LLMProviderPort, GatekeeperPort, StoragePort, KnowledgeGraphPort, NotificationPort, GitPort
 from kaos.infrastructure.adapters.git_adapter import GitCliAdapter
 from kaos.domain.models import Task, DecisionEngine, DecisionRule
+from kaos.engine.task_runner import TaskRunner, CoderResult, EvalResult, CompileResult, TestResult
 
 # Import Sandbox Facade — fallback an toàn
 try:
@@ -66,32 +67,6 @@ except ImportError:
                 text=True, bufsize=1,
             )
             return process
-
-
-@dataclass
-class CoderResult:
-    success: bool
-    files_created: List[str] = field(default_factory=list)
-    files_modified: List[str] = field(default_factory=list)
-    error_msg: str = ""
-
-
-@dataclass
-class EvalResult:
-    verdict: str  # "PASS" | "REWORK" | "FAIL"
-    feedback_msg: str = ""
-
-
-@dataclass
-class CompileResult:
-    passed: bool
-    new_errors: str = ""
-
-
-@dataclass
-class TestResult:
-    passed: bool
-    error: str = ""
 
 
 
@@ -173,6 +148,19 @@ class TaskQueueEngine:
         from kaos.infrastructure.adapters.git_sandbox import GitSandboxAdapter
         self.sandbox = GitSandboxAdapter(self.target_path)
         self.sandbox_enabled = (Path(self.target_path) / ".git").exists()
+
+        # Initialize TaskRunner helper
+        from kaos.domain.value_objects import ExecutionConfig
+        self.runner = TaskRunner(
+            llm_provider=self.llm_provider,
+            gatekeeper=self.gatekeeper,
+            storage=self.storage,
+            knowledge_graph=self.knowledge_graph,
+            config=ExecutionConfig(),
+            tmp_dir=self.tmp_dir,
+            target_path=self.target_path,
+            decision_engine=self.decision_engine,
+        )
 
     def _resolve_git(self, git: Optional[GitPort]) -> GitPort:
         if git is not None:
@@ -501,512 +489,6 @@ class TaskQueueEngine:
             logger.info(f"   Level {level}: {names}")
 
     # ────────────── 3. SKILL SELECTION ────────────────────────────
-
-    @staticmethod
-    def _select_skill_file(title: str) -> str:
-        """Choose a skill file based on task title keywords."""
-        title_lower = title.lower()
-        if "schema" in title_lower or "database" in title_lower or "migration" in title_lower:
-            return "cli-db.md"
-        elif "contract" in title_lower or "zod" in title_lower:
-            return "cli-contract.md"
-        elif "test" in title_lower or "unit" in title_lower or "e2e" in title_lower:
-            return "cli-test.md"
-        elif "review" in title_lower or "audit" in title_lower:
-            return "cli-review.md"
-        return "cli-backend.md"
-
-    # ────────────── 4. EXECUTE SINGLE TASK ────────────────────────
-
-    def _generate_tactical_plan(self, plan_data: dict) -> str:
-        """Format planner output into tactical plan string."""
-        if not plan_data:
-            return ""
-        steps = "\n".join(f"   * {s}" for s in plan_data.get("step_by_step_plan", []))
-        return (
-            f"\n\n[ARCHITECTURE PLAN — MUST FOLLOW]:\n"
-            f"- Complexity: {plan_data.get('complexity', 'MEDIUM')}\n"
-            f"- Files to create: {', '.join(plan_data.get('files_to_create', []))}\n"
-            f"- Files to modify: {', '.join(plan_data.get('files_to_modify', []))}\n"
-            f"- Impacted references: {', '.join(plan_data.get('impacted_references', []))}\n"
-            f"- Steps:\n{steps}"
-        )
-
-    # ── Knowledge Graph Integration ──────────────────────────────────
-
-    async def _upsert_attempt(self, task_id: str, attempt: int,
-                              success: bool, files_created: list,
-                              files_modified: list, error_msg: str,
-                              feedback_msg: str = "") -> None:
-        """
-        Save attempt as Result (Quả) + feedback Condition (Duyên động) into RedisGraph.
-        Mỗi attempt tạo một result_id duy nhất: R_{task_id}_{attempt}.
-        Nếu có feedback (từ attempt trước), lưu thành Condition kiểu "feedback" và
-        link qua edge MUTATES từ Result.
-        """
-        kg = self.knowledge_graph
-        if kg is None:
-            return
-
-        result_id = f"R_{task_id}_{attempt}"
-
-        await kg.upsert_result(
-            result_id=result_id,
-            task_id=task_id,
-            success=success,
-            files_created=files_created,
-            files_modified=files_modified,
-            error_message=error_msg,
-            attempt=attempt,
-        )
-
-        # Nếu attempt này nhận feedback (từ lần trước), lưu nó như là
-        # Duyên động và link Result → Condition via MUTATES
-        if feedback_msg:
-            cond_id = f"fb_{task_id}_{attempt}"
-            await kg.upsert_condition(
-                cond_id, "feedback",
-                feedback_msg[:2000],  # truncate to safe size
-            )
-            await kg.link_result_condition(result_id, cond_id)
-
-            # Cũng link Condition này vào Task (Duyên động ảnh hưởng)
-            await kg.link_task_condition(task_id, cond_id)
-
-    async def _upsert_task_context(self, task: Task, ctx: Dict[str, Any]) -> None:
-        """
-        Upsert Task (Nhân) + Conditions (Duyên) + Dependencies (DEPENDS_ON)
-        vào đồ thị Nhân-Duyên-Quả trên RedisGraph (qua KnowledgeGraphPort).
-        Giữ nguyên file-based để LLM provider vẫn đọc được.
-        """
-        kg = self.knowledge_graph
-        if kg is None:
-            return
-
-        # 1. Upsert Task node
-        await kg.upsert_task(
-            task_id=task.task_id,
-            title=task.title,
-            description=task.description,
-            module=task.module,
-            complexity=ctx.get("complexity", "MEDIUM"),
-            status=task.status,
-        )
-
-        # 2. Upsert static Conditions (Duyên tĩnh) — skill, schema, spec
-        #    Skill type derived from title
-        skill_type = self._select_skill_file(task.title).replace(".md", "")
-        skill_cond_id = f"skill_{skill_type}"
-        await kg.upsert_condition(
-            skill_cond_id, "skill", skill_type,
-            hash_val=task.module,
-        )
-        await kg.link_task_condition(task.task_id, skill_cond_id)
-
-        # Schema summary from report (if available)
-        if ctx.get("schema_summary"):
-            schema_cond_id = f"schema_{task.task_id}"
-            await kg.upsert_condition(
-                schema_cond_id, "schema", ctx["schema_summary"],
-            )
-            await kg.link_task_condition(task.task_id, schema_cond_id)
-
-        # Spec / description as dynamic condition
-        spec_cond_id = f"desc_{task.task_id}"
-        await kg.upsert_condition(
-            spec_cond_id, "spec", task.description[:500],
-        )
-        await kg.link_task_condition(task.task_id, spec_cond_id)
-
-        # 3. Link dependencies (DEPENDS_ON edges)
-        for dep_id in task.depends_on:
-            if dep_id in self.tasks:
-                await kg.link_task_dependency(dep_id, task.task_id)
-
-        logger.debug(
-            f"   [KG] Upserted task '{task.task_id}' with "
-            f"{len(task.depends_on)} dependencies & 3 conditions"
-        )
-
-    # ── Task Context Builder ─────────────────────────────────────────
-
-    def _build_task_context(self, task: Task) -> Dict[str, Any]:
-        """Build structured context JSON for LLM execution, merging task details and ScoutReport if available."""
-        ctx = {
-            "task_id": task.task_id,
-            "title": task.title,
-            "description": task.description,
-            "module": task.module,
-            "depends_on": task.depends_on,
-            "target_path": self.target_path,
-        }
-
-        # If task is an ActTask (or derived), extract complexity / budget info
-        if hasattr(task, "budget") and task.budget:
-            ctx["complexity"] = task.budget.complexity.value
-            ctx["max_turns"] = task.budget.max_turns
-        elif hasattr(task, "complexity") and task.complexity:
-            ctx["complexity"] = task.complexity.value
-        else:
-            ctx["complexity"] = "MEDIUM"
-            ctx["max_turns"] = 15
-
-        if self.report:
-            ctx.update({
-                "schema_summary": self.report.schema_summary,
-                "raw_data_summary": self.report.raw_data_summary,
-                "spec_summary": self.report.spec_summary,
-                "conflict_points": [
-                    {
-                        "type": c.conflict_type.value,
-                        "severity": c.severity.value,
-                        "description": c.description,
-                        "suggestion": c.suggestion,
-                    }
-                    for c in self.report.conflict_points
-                ],
-                "compatibility_score": self.report.compatibility_score,
-                "reasoning": self.report.reasoning,
-            })
-
-        # [MỚI] Tra cứu knowledge graph cho function liên quan
-        if hasattr(self, '_code_graph_repo') and self._code_graph_repo:
-            try:
-                related = asyncio.get_event_loop().run_until_complete(
-                    self._code_graph_repo.search_functions(task.title)
-                )
-                if related:
-                    ctx["codebase_knowledge"] = [
-                        {
-                            "function": n.function_name,
-                            "file": n.file_path,
-                            "lines": f"{n.start_line}-{n.end_line}",
-                            "description": n.description,
-                            "preconditions": n.preconditions[:5],
-                            "exceptions": n.exceptions[:5],
-                            "side_effects": n.side_effects[:3],
-                            "callers": n.caller_functions[:5],
-                            "callees": n.callee_functions[:5],
-                        }
-                        for n in related[:8]  # Giới hạn 8 functions để tránh tràn context
-                    ]
-            except Exception as e:
-                logger.warning(f"⚠️ Knowledge graph lookup failed: {e}")
-
-        return ctx
-
-    # ────────────── 4a. PLANNER HELPER ──────────────────────────────
-
-    async def _run_planner(self, task_ctx_file: Path, plan_file: Path) -> bool:
-        """Run the planner agent (first attempt only). Returns True if plan file was created."""
-        task_id = task_ctx_file.stem.replace("goose_ctx_", "").replace("act_ctx_", "")
-        logger.info(f"   🧭 [Planner] Analysing complexity & planning for {task_id}...")
-
-        plan_instruction = Prompts.PLANNER.format(
-            ctx_file_path=task_ctx_file.resolve(),
-            plan_file_path=plan_file.resolve(),
-        )
-
-        try:
-            exit_code, _logs = await self.llm_provider.run_agent(
-                AgentInstruction.from_raw(
-                    plan_instruction,
-                    timeout=float(TIMEOUT_SECS_PLANNER),
-                    skill_name="cli-backend",
-                    output_file=str(plan_file),
-                )
-            )
-            if exit_code == 0 and plan_file.exists():
-                logger.info("      ✅ [Planner] Plan complete.")
-                return True
-        except Exception as e:
-            logger.warning(f"      ⚠️ [Planner] Exception: {e}")
-
-        logger.warning("      ⚠️ [Planner] Failed — will code directly.")
-        return False
-
-    # ────────────── 4b. CODER HELPER ────────────────────────────────
-
-    async def _run_coder(
-        self,
-        task: Task,
-        ctx_file: Path,
-        skill_file: str,
-        tactical_plan: str,
-        attempt: int,
-        feedback_msg: str,
-        budget: TaskBudget,
-    ) -> CoderResult:
-        """Run the coder agent. Returns CoderResult."""
-        out_file = self.tmp_dir / f"act_out_{task.task_id}_a{attempt}.json"
-
-        instruction = (
-            f"Bạn là KAOS Act Coder. Thực thi task sau với tối đa {budget.max_turns} turns.\n\n"
-            f"=== TASK ===\n"
-            f"ID: {task.task_id}\n"
-            f"Title: {task.title}\n"
-            f"Module: {task.module}\n"
-            f"Độ phức tạp: {budget.complexity.value}\n\n"
-            f"=== MÔ TẢ ===\n"
-            f"{task.description}\n\n"
-            f"=== CONTEXT ===\n"
-            f"Đọc context JSON từ file: {ctx_file.resolve()}\n\n"
-        )
-        if tactical_plan:
-            instruction += f"=== ARCHITECTURE PLAN ===\n{tactical_plan}\n\n"
-
-        instruction += (
-            f"=== HƯỚNG DẪN ===\n"
-            f"1. Đọc codebase hiện tại tại: {self.target_path}\n"
-            f"2. Phân tích context + spec + schema để hiểu yêu cầu\n"
-            f"3. Viết code theo Clean Architecture (Domain → Application → Interface → Infrastructure)\n"
-            f"4. KHÔNG tự chạy lệnh biên dịch - Gatekeeper bên ngoài sẽ lo việc đó\n"
-            f"5. Ghi kết quả vào file JSON: {out_file.resolve()}\n\n"
-            f"=== FORMAT JSON ĐẦU RA ===\n"
-            f"{{\n"
-            f'  "success": true,\n'
-            f'  "files_created": ["path/to/new_file.ts"],\n'
-            f'  "files_modified": ["path/to/existing_file.ts"],\n'
-            f'  "summary": "Mô tả ngắn những gì đã làm"\n'
-            f"}}\n"
-        )
-
-        if feedback_msg:
-            instruction += (
-                f"\n\n===== LẦN TRƯỚC THẤT BẠI====="
-                f"Hãy khắc phục lỗi sau:\n{feedback_msg[:3000]}\n"
-                f"================================"
-            )
-
-        logger.info(f"   🦆 [Coder] Calling agent for {task.task_id} (attempt {attempt})...")
-
-        try:
-            exit_code, _logs = await self.llm_provider.run_agent(
-                AgentInstruction.from_raw(
-                    instruction,
-                    timeout=float(budget.timeout_secs),
-                    skill_name=skill_file.replace(".md", ""),
-                    output_file=str(out_file),
-                    max_turns=budget.max_turns,
-                )
-            )
-
-            if exit_code != 0:
-                return CoderResult(success=False, error_msg=f"LLM Runtime Error (exit code: {exit_code})")
-
-            # Parse the output JSON
-            files_created, files_modified = [], []
-            if out_file.exists():
-                try:
-                    data = json.loads(out_file.read_text(encoding="utf-8"))
-                    return CoderResult(
-                        success=data.get("success", True),
-                        files_created=data.get("files_created", []),
-                        files_modified=data.get("files_modified", []),
-                    )
-                except Exception as e:
-                    logger.debug(f"      ⚠️ Cannot read coder output: {e}")
-                    return CoderResult(success=False, error_msg=f"Malformed coder output: {e}")
-            else:
-                # Fallback: check old goose_out path
-                fallback_out = self.tmp_dir / f"goose_out_{task.task_id}.json"
-                if fallback_out.exists():
-                    try:
-                        data = json.loads(fallback_out.read_text(encoding="utf-8"))
-                        return CoderResult(
-                            success=data.get("success", True),
-                            files_created=data.get("files_created", []),
-                            files_modified=data.get("files_modified", []),
-                        )
-                    except Exception:
-                        pass
-                return CoderResult(success=False, error_msg="Coder output file not found")
-        except Exception as e:
-            logger.error(f"      ❌ Exception during coding: {e}")
-            return CoderResult(success=False, error_msg=str(e))
-
-    # ────────────── 4c. EVALUATOR HELPER ──────────────────────────
-
-    async def _run_evaluator(
-        self,
-        task: Task,
-        ctx_file: Path,
-        files_created: List[str],
-        files_modified: List[str],
-    ) -> EvalResult:
-        """Run evaluator check. Returns EvalResult."""
-        logger.info(f"   🔍 [Evaluator] Checking task {task.task_id}...")
-
-        changed_files = list(set(files_created + files_modified))
-        eval_ctx = {
-            "original_requirements": task.description,
-            "changed_files": changed_files,
-            "schema_status": task.module,
-        }
-        eval_ctx_file = self.tmp_dir / f"eval_ctx_{task.task_id}.json"
-        with open(eval_ctx_file, "w") as f:
-            json.dump(eval_ctx, f, indent=2)
-
-        eval_out_file = self.tmp_dir / f"goose_out_eval_{task.task_id}.json"
-        eval_instruction = Prompts.EVALUATOR.format(
-            eval_ctx_file_path=eval_ctx_file.resolve(),
-            eval_out_file_path=eval_out_file.resolve(),
-        )
-
-        try:
-            exit_code, _logs = await self.llm_provider.run_agent(
-                AgentInstruction.from_raw(
-                    eval_instruction,
-                    timeout=float(TIMEOUT_SECS_PLANNER),
-                    skill_name="cli-review",
-                    output_file=str(eval_out_file),
-                )
-            )
-
-            verdict = "PASS"
-            feedback_msg = ""
-            if eval_out_file.exists():
-                try:
-                    eval_result = json.loads(eval_out_file.read_text())
-                    verdict = eval_result.get("verdict", "PASS")
-                    issues = eval_result.get("issues", [])
-                    if issues:
-                        lines = ["Evaluator issues:"]
-                        for issue in issues:
-                            lines.append(
-                                f"- [{issue.get('severity', 'INFO')}] {issue.get('field', '')}: "
-                                f"{issue.get('message', '')}"
-                            )
-                            sug = issue.get("suggestion", "")
-                            if sug:
-                                lines.append(f"  → Fix: {sug}")
-                        feedback_msg = "\n".join(lines)
-                except Exception:
-                    pass
-
-            return EvalResult(verdict=verdict, feedback_msg=feedback_msg)
-        except Exception as e:
-            logger.warning(f"      ⚠️ Evaluator exception: {e}")
-            return EvalResult(verdict="PASS", feedback_msg="")
-
-    # ────────────── 4d. GATEKEEPER COMPILE HELPER ────────────────
-
-    async def _run_gatekeeper_compile(
-        self,
-        task: Task,
-        attempt: int,
-        baseline: Optional[dict] = None,
-    ) -> CompileResult:
-        """TypeScript compilation check via Gatekeeper port. Returns CompileResult."""
-        logger.info(f"   🛡️  [Gatekeeper] TypeScript compilation check...")
-        try:
-            compile_passed, compile_err = await self.gatekeeper.compile_check(
-                task.module,
-                f"{task.task_id}_a{attempt}",
-            )
-
-            if compile_passed:
-                return CompileResult(passed=True)
-
-            # Filter baseline errors (pre-existing, not caused by this task)
-            if baseline:
-                has_new, new_errors = self._is_new_error(compile_err, baseline)
-                if not has_new:
-                    logger.info(f"      ℹ️ Compile errors are all pre-existing — ignoring")
-                    return CompileResult(passed=True)
-                logger.warning(f"      ❌ Compile has NEW errors ({new_errors[:100]}...)")
-                return CompileResult(passed=False, new_errors=new_errors)
-
-            logger.warning(f"      ❌ Compile failed: {compile_err[:120]}...")
-            return CompileResult(passed=False, new_errors=compile_err)
-        except Exception as e:
-            logger.error(f"      ❌ Exception during compile check: {e}")
-            return CompileResult(passed=False, new_errors=str(e))
-
-    async def _run_gatekeeper_architecture(self, task: Task, attempt: int) -> Tuple[bool, str]:
-        """Kiểm tra quy tắc kiến trúc. Trả về (passed, error_msg)."""
-        logger.info(f"   🏗️  [Architecture Check] Checking architecture rules...")
-        try:
-            res = await self.gatekeeper.check_architecture(
-                file_paths=[],  # TS Bridge tự detect files đã thay đổi
-                task_id=f"{task.task_id}_a{attempt}"
-            )
-            if isinstance(res, tuple) and len(res) == 2:
-                arch_passed, arch_violations = res
-            else:
-                arch_passed, arch_violations = True, []
-
-            diag_score, diag_reasons = self.decision_engine.evaluate_violations(
-                compile_passed=True,
-                compile_error="",
-                arch_passed=arch_passed,
-                violations=arch_violations
-            )
-            if not arch_passed:
-                logger.warning(f"      ❌ Vi phạm kiến trúc (Score: {diag_score:.1f}/100)!")
-                reasons_str = "\n".join(diag_reasons[:5])
-                return False, f"[ARCHITECTURE GATEKEEPER] Code vi phạm quy tắc kiến trúc dự án!\nĐiểm chất lượng: {diag_score:.1f}/100\nCác vi phạm:\n{reasons_str}"
-            return True, ""
-        except Exception as e:
-            logger.error(f"      ❌ Exception during architecture check: {e}")
-            return False, str(e)
-
-    # ────────────── 4e. GATEKEEPER TEST HELPER ──────────────────
-
-    async def _run_gatekeeper_test(
-        self,
-        task: Task,
-        attempt: int,
-    ) -> TestResult:
-        """Run test suite via Gatekeeper port. Returns TestResult."""
-        logger.info(f"      └─ [Gatekeeper] Running tests...")
-        try:
-            passed, err_msg = await self.gatekeeper.run_tests(
-                task.module,
-                f"{task.task_id}_a{attempt}",
-            )
-
-            if passed:
-                logger.info(f"      ✅ [Gatekeeper] Tests PASSED")
-                return TestResult(passed=True)
-            else:
-                logger.warning(f"      ❌ [Gatekeeper] Tests FAILED")
-                logger.warning(f"         Error: {str(err_msg)[:200]}")
-                return TestResult(passed=False, error=err_msg)
-        except Exception as e:
-            logger.error(f"      ❌ Exception during test execution: {e}")
-            return TestResult(passed=False, error=str(e))
-
-    # ────────────── 4f. BASELINE ERROR FILTER ───────────────────
-
-    @staticmethod
-    def _is_new_error(
-        compile_errors_str: str,
-        baseline: Optional[Dict[str, Any]],
-    ) -> Tuple[bool, str]:
-        """
-        Compare compile errors with baseline.
-        Returns True only if there are NEW errors (not in baseline).
-        Returns: (has_new_errors, new_errors_str)
-        """
-        if not baseline or not baseline.get("error_lines"):
-            if compile_errors_str:
-                return True, compile_errors_str
-            return False, ""
-
-        baseline_lines = baseline["error_lines"]
-        new_lines = []
-        for line in compile_errors_str.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            normalized = re.sub(r'\(\d+,\d+\)', '', line).strip()
-            if normalized not in baseline_lines:
-                new_lines.append(line)
-        if new_lines:
-            return True, "\n".join(new_lines)
-        return False, ""
-
     # ────────────── 4g. FEEDBACK LOOP ───────────────────────────
 
     async def _feedback_loop(
@@ -1028,7 +510,7 @@ class TaskQueueEngine:
         else:
             budget = TaskBudget.from_task_description(task.task_id, task.description)
 
-        skill_file = self._select_skill_file(task.title)
+        skill_file = self.runner.select_skill_file(task.title)
         ctx_file = self.tmp_dir / f"act_ctx_{task.task_id}.json"
 
         files_created: List[str] = []
@@ -1105,7 +587,7 @@ class TaskQueueEngine:
             """Run Code → Eval → Compile → Arch → Test cycle. Returns (success, stage, error)."""
             nonlocal files_created, files_modified, error_msg
 
-            coder_res = await self._run_coder(
+            coder_res = await self.runner.run_coder(
                 task=task,
                 ctx_file=ctx_file,
                 skill_file=skill_file,
@@ -1123,26 +605,38 @@ class TaskQueueEngine:
             if coder_res.files_modified:
                 files_modified = coder_res.files_modified
 
+            # Compile Check (Compile check runs first to provide error report to evaluator)
+            compile_res = await self.runner.run_gatekeeper_compile(task, attempt, baseline)
+
+            # Test Runner Check
+            test_res = await self.runner.run_gatekeeper_test(task, attempt, coder_res)
+
             # Evaluator
-            eval_res = await self._run_evaluator(task, ctx_file, files_created, files_modified)
+            eval_res = await self.runner.run_evaluator(
+                task=task,
+                ctx_file=ctx_file,
+                files_created=files_created,
+                files_modified=files_modified,
+                compile_res=compile_res,
+                test_res=test_res,
+                attempt=attempt
+            )
             if eval_res.verdict != "PASS":
                 error_msg = eval_res.feedback_msg or "Evaluator rejected changes"
                 return False, "evaluator", error_msg
 
-            # Gatekeeper compile
-            compile_res = await self._run_gatekeeper_compile(task, attempt, baseline)
+            # Compile Check check (if not compile check again, verify compile status)
             if not compile_res.passed:
                 error_msg = compile_res.new_errors or "Compilation failed"
                 return False, "compile", error_msg
 
             # Gatekeeper architecture check
-            arch_passed, arch_err = await self._run_gatekeeper_architecture(task, attempt)
+            arch_passed, arch_err = await self.runner.run_gatekeeper_architecture(task, attempt)
             if not arch_passed:
                 error_msg = arch_err or "Architecture boundary check failed"
                 return False, "arch", error_msg
 
-            # Gatekeeper test
-            test_res = await self._run_gatekeeper_test(task, attempt)
+            # Test Check check
             if not test_res.passed:
                 error_msg = test_res.error or "Tests failed"
                 return False, "test", error_msg
@@ -1155,7 +649,7 @@ class TaskQueueEngine:
         if first_ok:
             logger.info(f"   ✅ [{task.task_id}] Passed on first attempt")
             # Persist successful first attempt in Knowledge Graph
-            await self._upsert_attempt(
+            await self.runner.upsert_attempt(
                 task_id=task.task_id,
                 attempt=attempt_count,
                 success=True,
@@ -1167,7 +661,7 @@ class TaskQueueEngine:
             return _build_result(True)
 
         # Persist failed first attempt in Knowledge Graph
-        await self._upsert_attempt(
+        await self.runner.upsert_attempt(
             task_id=task.task_id,
             attempt=attempt_count,
             success=False,
@@ -1216,7 +710,7 @@ class TaskQueueEngine:
                 fix_ok, failed_stage, raw_error = await _run_full_cycle(attempt_count, fix_budget, feedback_msg)
 
                 # Persist fix attempt in Knowledge Graph
-                await self._upsert_attempt(
+                await self.runner.upsert_attempt(
                     task_id=task.task_id,
                     attempt=attempt_count,
                     success=fix_ok,
@@ -1280,7 +774,7 @@ class TaskQueueEngine:
             )
 
             # Persist escalation attempt in Knowledge Graph
-            await self._upsert_attempt(
+            await self.runner.upsert_attempt(
                 task_id=task.task_id,
                 attempt=attempt_count,
                 success=esc_ok,
@@ -1299,6 +793,29 @@ class TaskQueueEngine:
 
         logger.error(f"   ⛔ [{task.task_id}] All attempts failed.")
         return _build_result(False)
+
+    # ────────────── 4g. AUTO-RESCAN HELPERS ─────────────────────────
+
+    async def _auto_rescan_files(self, result: dict) -> None:
+        """Tự động quét lại các file đã thay đổi/tạo mới sau khi task thành công."""
+        affected_files = list(set(result.get("files_modified", []) + result.get("files_created", [])))
+        if affected_files and self.knowledge_graph:
+            logger.info(f"   🔄 [TaskQueueEngine] Auto-rescanning {len(affected_files)} modified files to update Knowledge Graph...")
+            try:
+                from kaos.application.use_cases.scan_codebase import ScanCodebaseUseCase
+                from kaos.infrastructure.adapters.ts_code_scanner import TsCodeScannerAdapter
+
+                scanner = TsCodeScannerAdapter(llm_provider=None)
+                scan_use_case = ScanCodebaseUseCase(scanner=scanner, repo=self.knowledge_graph, config=self.runner.config)
+                await scan_use_case.execute(
+                    target_path=self.target_path,
+                    structural_only=True,
+                    incremental=True,
+                    files=affected_files,
+                )
+                logger.info("   ✅ [TaskQueueEngine] Knowledge Graph auto-rescanned & updated.")
+            except Exception as scan_err:
+                logger.error(f"   ⚠️ [TaskQueueEngine] Auto-rescan failed: {scan_err}")
 
     # ────────────── 4h. EXECUTE SINGLE TASK (simplified) ────────
 
@@ -1335,23 +852,23 @@ class TaskQueueEngine:
                 return False
 
         # Build context file (file-based, backward compat)
-        task_ctx = self._build_task_context(task)
+        task_ctx = self.runner.build_task_context(task, report=self.report, code_graph_repo=getattr(self, '_code_graph_repo', None))
         task_ctx_file = self.tmp_dir / f"act_ctx_{task.task_id}.json"
         self.storage.write_json(task_ctx_file, task_ctx)
 
         # Upsert into Knowledge Graph (Nhân-Duyên-Quả)
-        await self._upsert_task_context(task, task_ctx)
+        await self.runner.upsert_task_context(task, task_ctx)
 
         try:
             # Planner (first-attempt only)
             plan_file = self.tmp_dir / f"plan_{task.task_id}.json"
-            await self._run_planner(task_ctx_file, plan_file)
+            await self.runner.run_planner(task_ctx_file, plan_file)
 
             tactical_plan = ""
             if plan_file.exists():
                 try:
                     plan_data = json.loads(plan_file.read_text())
-                    tactical_plan = self._generate_tactical_plan(plan_data)
+                    tactical_plan = self.runner.generate_tactical_plan(plan_data)
                 except Exception:
                     pass
 
@@ -1360,6 +877,9 @@ class TaskQueueEngine:
             task.result = result
 
             if result.get("success", False):
+                # Auto-rescan files to update Knowledge Graph
+                await self._auto_rescan_files(result)
+
                 # 🔀 Merge sandbox back into develop (if enabled)
                 if use_sandbox:
                     merged, conflicts = await self.sandbox.merge_back(task.task_id, target_branch="develop")

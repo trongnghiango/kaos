@@ -227,3 +227,25 @@ class TestTsCodeScannerAdapterParseJsonFromOutput:
         raw = '{"description": "hello" missing bracket'
         res = adapter._parse_json_from_output(raw)
         assert res is None
+
+    def test_parse_goose_output_with_garbage_text(self, adapter):
+        """Bóc tách thành công JSON từ output chứa log chào mừng và rác của Goose CLI."""
+        raw = (
+            "__( O)>  ● new session · custom_ka ka.base\n"
+            "   \\____)    20260701_3 · /tmp/kaos-e2e-project\n"
+            "     L L     goose is ready\n\n"
+            "  ────────────────────────────────────────\n"
+            "  ▸ todo_write todo\n"
+            "    content: - [x] Analyze TS function\n\n"
+            "{\n"
+            '  "description": "Thực hiện phép cộng hai số.",\n'
+            '  "preconditions": ["Tham số a, b phải là number"],\n'
+            '  "exceptions": [],\n'
+            '  "side_effects": [],\n'
+            '  "keywords": ["math", "add"]\n'
+            "}\n"
+        )
+        res = adapter._parse_json_from_output(raw)
+        assert res is not None
+        assert res["description"] == "Thực hiện phép cộng hai số."
+        assert res["keywords"] == ["math", "add"]

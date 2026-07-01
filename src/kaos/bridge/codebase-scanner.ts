@@ -206,6 +206,16 @@ function extractImports(sourceFile: ts.SourceFile): ImportInfo[] {
     if (ts.isImportDeclaration(node)) {
       const info = extractImportInfo(node);
       if (info) imports.push(info);
+    } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      // Dynamic import: import('module')
+      const args = node.arguments;
+      if (args.length > 0 && ts.isStringLiteral(args[0])) {
+        const moduleText = (args[0] as ts.StringLiteral).text;
+        imports.push({
+          module: moduleText,
+          imported_names: ['*'],
+        });
+      }
     }
     ts.forEachChild(node, walk);
   }
@@ -218,8 +228,47 @@ function extractFunctionName(node: ts.FunctionLikeDeclaration, sourceFile: ts.So
   if (node.name) {
     return node.name.getText(sourceFile);
   }
+  
+  const parent = node.parent;
+  if (parent) {
+    // 1. const myArrowFunc = () => {}
+    if (ts.isVariableDeclaration(parent) && parent.name) {
+      return parent.name.getText(sourceFile);
+    }
+    // 2. const obj = { myProp: () => {} }
+    if (ts.isPropertyAssignment(parent) && parent.name) {
+      return parent.name.getText(sourceFile);
+    }
+    // 3. class X { myField = () => {} }
+    if (ts.isPropertyDeclaration(parent) && parent.name) {
+      return parent.name.getText(sourceFile);
+    }
+  }
+
   // Arrow function or anonymous — use surrounding context
   return `anonymous_${node.getStart(sourceFile)}`;
+}
+
+function getEffectiveModifiers(node: ts.Node): ts.ModifierLike[] | undefined {
+  const modifiers = (node as any).modifiers as ts.ModifierLike[] | undefined;
+  if (modifiers && modifiers.length > 0) {
+    return modifiers;
+  }
+
+  // Nếu là ArrowFunction hoặc FunctionExpression được gán cho biến
+  if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
+    const parent = node.parent;
+    if (parent && ts.isVariableDeclaration(parent)) {
+      const varList = parent.parent;
+      if (varList && ts.isVariableDeclarationList(varList)) {
+        const varStatement = varList.parent;
+        if (varStatement && ts.isVariableStatement(varStatement)) {
+          return (varStatement as any).modifiers;
+        }
+      }
+    }
+  }
+  return undefined;
 }
 
 function getNodeType(node: ts.Node): string {
@@ -286,7 +335,7 @@ function parseFile(filePath: string, relativePath: string, sourceFile?: ts.Sourc
         return;
       }
 
-      const modifiers = (node as any).modifiers as ts.ModifierLike[] | undefined;
+      const effectiveModifiers = getEffectiveModifiers(node);
       const funcName = extractFunctionName(node, sf);
       const callees = extractCalleeNames(node, sf);
       const startLine = getLine(node.getStart(sf));
@@ -303,11 +352,11 @@ function parseFile(filePath: string, relativePath: string, sourceFile?: ts.Sourc
         file_path: relativePath,
         start_line: startLine,
         end_line: endLine,
-        is_exported: isExported(modifiers),
-        is_async: isAsync(modifiers),
+        is_exported: isExported(effectiveModifiers),
+        is_async: isAsync(effectiveModifiers),
         node_type: getNodeType(node),
         class_name: getClassName(node),
-        access_modifier: getAccessModifier(modifiers),
+        access_modifier: getAccessModifier(effectiveModifiers),
         imports: fileImports,
         callee_functions: callees.filter((c, i, a) => a.indexOf(c) === i), // unique
         file_hash: fileHash,

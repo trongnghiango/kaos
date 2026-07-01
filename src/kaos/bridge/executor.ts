@@ -102,10 +102,24 @@ async function handleTest(task: TaskContext) {
     : `src/modules/${task.module}`;
   
   let res;
-  if (fs.existsSync(localPnpm)) {
-    res = runCmd(`node ${localPnpm} test ${testPath}`, backendDir);
+  if (fs.existsSync(backendDir)) {
+    if (fs.existsSync(localPnpm)) {
+      res = runCmd(`node ${localPnpm} test ${testPath}`, backendDir);
+    } else {
+      res = runCmd(`cd backend && pnpm test ${testPath}`, REPO_ROOT);
+    }
   } else {
-    res = runCmd(`cd backend && pnpm test ${testPath}`, REPO_ROOT);
+    // Nếu không tồn tại thư mục backend, chạy test trực tiếp từ thư mục gốc
+    const rootPnpm = path.resolve(REPO_ROOT, 'node_modules/.bin/pnpm');
+    // Ở root thì test path sẽ là src/${task.module} hoặc tương đương
+    const rootTestPath = (task.module === 'all' || task.module === 'core')
+      ? 'src'
+      : `src/${task.module}`;
+    if (fs.existsSync(rootPnpm)) {
+      res = runCmd(`node ${rootPnpm} test ${rootTestPath}`, REPO_ROOT);
+    } else {
+      res = runCmd(`pnpm test ${rootTestPath}`, REPO_ROOT);
+    }
   }
   outputResult({
     success: res.success,

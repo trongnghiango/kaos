@@ -195,9 +195,21 @@ class TsCodeScannerAdapter(CodeScannerPort):
         )
 
     def _parse_json_from_output(self, text: str) -> Optional[Dict[str, Any]]:
-        """Parse JSON từ LLM output, handle markdown code block."""
+        """Parse JSON từ LLM output, handle markdown code block và các text lộn xộn từ Goose CLI."""
         text = text.strip()
-        # Xử lý trường hợp LLM wrap trong ```json ... ```
+        
+        # 1. Trích xuất JSON bằng cách tìm cặp ngoặc nhọn ngoài cùng
+        start_idx = text.find('{')
+        end_idx = text.rfind('}')
+        
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            json_candidate = text[start_idx:end_idx + 1]
+            try:
+                return json.loads(json_candidate)
+            except json.JSONDecodeError:
+                pass
+
+        # 2. Fallback cách parse cũ nếu không tìm thấy cặp ngoặc nhọn hoặc parse bị lỗi
         if text.startswith("```"):
             lines = text.split("\n", 1)
             if len(lines) > 1:

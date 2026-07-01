@@ -194,3 +194,60 @@ class TestScanCodebaseIntegration:
         function_names = {n.function_name for n in nodes}
         assert "newHelper" in function_names
         assert "add" in function_names  # Các hàm cũ vẫn được lưu trong functions.json
+
+    @pytest.mark.asyncio
+    async def test_integration_dynamic_import_and_arrow_export(self, tmp_path, use_case):
+        """Validate that exported arrow functions and dynamic imports are captured."""
+        uc, repo = use_case
+        # Create a fake TS project with arrow export and dynamic import
+        project_dir = tmp_path / "tsproj"
+        project_dir.mkdir(parents=True)
+        src_dir = project_dir / "src"
+        src_dir.mkdir(parents=True)
+
+        # 1. Exported arrow function
+        arrow_file = src_dir / "arrow.ts"
+        arrow_file.write_text(
+            "export const foo = (x: number) => x + 1;\n",
+            encoding="utf-8",
+        )
+
+        # 2. Dynamic import function and a dummy module
+        dyn_file = src_dir / "dyn.ts"
+        dyn_file.write_text(
+            "export async function loadModule() {\n"
+            "  const mod = await import('./module');\n"
+            "  return mod;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        module_file = src_dir / "module.ts"
+        module_file.write_text(
+            "export const data = 42;\n",
+            encoding="utf-8",
+        )
+
+        # Init git repo (required for incremental mode but not used here)
+        subprocess.run(["git", "init"], cwd=project_dir, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=project_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_dir, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=project_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=project_dir, check=True)
+
+        # Run scan
+        target_path = str(src_dir)
+        result = await uc.execute(
+            target_path=target_path,
+            structural_only=True,
+            incremental=False,
+        )
+        assert result["status"] == "scanned"
+        # Load nodes and verify
+        nodes = await repo.load_all()
+        # Find arrow function node
+        arrow_node = next(n for n in nodes if n.function_name == "foo")
+        assert arrow_node.is_exported is True
+        # Find dynamic import function node
+        load_node = next(n for n in nodes if n.function_name == "loadModule")
+        # Dynamic import should appear in imports list as a module with wildcard import name
+        assert any(imp.module == "./module" and "*" in imp.imported_names for imp in load_node.imports)

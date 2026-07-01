@@ -140,6 +140,11 @@ class GatekeeperPort(ABC):
         """Kiểm tra sự vi phạm quy tắc kiến trúc. Trả về: (passed, list_of_violations)"""
         pass
 
+    @abstractmethod
+    async def check_migration(self, module: str, task_id: str) -> Tuple[bool, str, List[str]]:
+        """Kiểm tra tính hợp lệ và tự động sinh migration cho Drizzle ORM. Trả về: (passed, errors_str, created_files)"""
+        pass
+
 
 class LLMProviderPort(ABC):
     """

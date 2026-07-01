@@ -82,6 +82,7 @@ def mock_gatekeeper():
     m = AsyncMock()
     m.compile_check.return_value = (True, "")  # compile passes by default
     m.run_tests.return_value = (True, "")  # test passes by default
+    m.check_migration.return_value = (True, "", [])  # migration passes by default
     return m
 
 
@@ -506,3 +507,41 @@ class TestActExecutor:
         results = await executor.execute(empty_report)
         # It passes
         assert results[0].success
+
+    @pytest.mark.asyncio
+    async def test_migration_failure_stops_task(
+        self, executor, empty_report, mock_gatekeeper, tmp_path
+    ):
+        """Nếu migration check fail -> task fail."""
+        out_file = tmp_path / "act_out_ACT_001_a1.json"
+        out_file.write_text(json.dumps({
+            "success": True,
+            "files_created": ["src/new_file.ts"],
+            "files_modified": [],
+        }))
+
+        mock_gatekeeper.check_migration.return_value = (False, "drizzle-kit generate failed", [])
+
+        results = await executor.execute(empty_report)
+        assert results[0].success is False
+        assert "drizzle-kit generate failed" in results[0].error
+
+    @pytest.mark.asyncio
+    async def test_migration_success_tracks_new_migration_files(
+        self, executor, empty_report, mock_gatekeeper, tmp_path
+    ):
+        """Nếu migration check sinh ra file mới -> track files đó."""
+        out_file = tmp_path / "act_out_ACT_001_a1.json"
+        out_file.write_text(json.dumps({
+            "success": True,
+            "files_created": ["src/new_file.ts"],
+            "files_modified": [],
+        }))
+
+        mock_gatekeeper.check_migration.return_value = (
+            True, "", ["backend/database/migrations/0001_add_roles.sql"]
+        )
+
+        results = await executor.execute(empty_report)
+        assert results[0].success is True
+        assert "backend/database/migrations/0001_add_roles.sql" in results[0].files_created

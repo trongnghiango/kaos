@@ -22,7 +22,9 @@ def mock_storage():
 
 @pytest.fixture
 def mock_gatekeeper():
-    return AsyncMock(spec=GatekeeperPort)
+    m = AsyncMock(spec=GatekeeperPort)
+    m.check_migration.return_value = (True, "", [])
+    return m
 
 
 @pytest.fixture

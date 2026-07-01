@@ -38,7 +38,9 @@ function runCmd(cmd: string, cwd: string = REPO_ROOT): { success: boolean; stdou
   try {
     const env = { ...process.env };
     if (env.PATH) {
-      env.PATH = env.PATH.split(':').filter(p => !p.includes('mcp-hermit')).join(':');
+      env.PATH = env.PATH.split(':')
+        .filter(p => !p.includes('mcp-hermit') && !p.includes('goose-desktop') && !p.includes('/opt/goose-desktop'))
+        .join(':');
     }
     
     // Redirect stderr sang stdout để gom hết output
@@ -491,6 +493,93 @@ async function handleCheckArchitecture(task: TaskContext) {
   }
 }
 
+async function handleCheckMigration(task: TaskContext) {
+  const backendDir = path.resolve(REPO_ROOT, 'backend');
+  if (!fs.existsSync(backendDir)) {
+    outputResult({
+      success: true,
+      stdout: 'No backend directory, skipping Drizzle migration check',
+      stderr: ''
+    });
+    return;
+  }
+
+  const packageJsonPath = path.resolve(backendDir, 'package.json');
+  let hasDrizzle = false;
+  if (fs.existsSync(packageJsonPath)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
+      if (pkg.scripts && pkg.scripts['db:generate']) {
+        hasDrizzle = true;
+      }
+    } catch (e) {}
+  }
+  if (!hasDrizzle) {
+    outputResult({
+      success: true,
+      stdout: 'Drizzle not configured in package.json, skipping migration check',
+      stderr: ''
+    });
+    return;
+  }
+
+  const env = { ...process.env };
+  if (env.PATH) {
+    env.PATH = env.PATH.split(':')
+      .filter(p => !p.includes('mcp-hermit') && !p.includes('goose-desktop') && !p.includes('/opt/goose-desktop'))
+      .join(':');
+  }
+
+  if (!env.DATABASE_URL && !env.DB_HOST) {
+    env.DATABASE_URL = 'postgres://postgres:postgres@localhost:5432/stax';
+    env.DB_HOST = 'localhost';
+  }
+
+  const localPnpm = path.resolve(backendDir, 'node_modules/.bin/pnpm');
+  let cmd = '';
+  if (fs.existsSync(localPnpm)) {
+    cmd = `node ${localPnpm} db:generate`;
+  } else {
+    cmd = `pnpm db:generate`;
+  }
+
+  const res = runCmd(cmd, backendDir);
+
+  if (!res.success) {
+    outputResult({
+      success: false,
+      stdout: res.stdout,
+      stderr: res.stderr,
+      error: `Migration generation failed: ${res.stderr || res.stdout}`
+    });
+    return;
+  }
+
+  const gitStatusRes = runCmd('git status --porcelain', REPO_ROOT);
+  const createdFiles: string[] = [];
+  if (gitStatusRes.success) {
+    const lines = gitStatusRes.stdout.split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('??') || trimmed.startsWith('A')) {
+        const filePart = trimmed.substring(2).trim();
+        if (filePart.includes('migrations/') || filePart.includes('drizzle/')) {
+          createdFiles.push(filePart);
+        }
+      }
+    }
+  }
+
+  outputResult({
+    success: true,
+    stdout: `Migration check passed. Generated: ${createdFiles.join(', ')}`,
+    stderr: '',
+    metrics: {
+      files_created: createdFiles
+    }
+  });
+}
+
 // ─── Main Logic ─────────────────────────────────────────────────────────────
 async function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -569,6 +658,9 @@ async function main() {
       break;
     case 'check-architecture':
       await handleCheckArchitecture(task);
+      break;
+    case 'check-migration':
+      await handleCheckMigration(task);
       break;
     default:
       outputResult({ success: false, stdout: '', stderr: '', error: `Unknown action: ${task.action}` });

@@ -185,3 +185,39 @@ class TsGatekeeperAdapter(GatekeeperPort):
         except Exception as e:
             logger.error(f"❌ Lỗi check_architecture: {e}")
             return False, []
+
+    async def check_migration(self, module: str, task_id: str) -> Tuple[bool, str, List[str]]:
+        migration_ctx = {
+            "action": "check-migration",
+            "module": module,
+        }
+        
+        try:
+            res = await run_command_async(
+                self.cmd_prefix + [self.executor_script],
+                cwd=str(config.TARGET_PATH),
+                capture_output=True,
+                stdin_data=json.dumps(migration_ctx)
+            )
+
+            stdout_text = res.stdout.strip() if hasattr(res, "stdout") else ""
+            migration_output = {}
+            if stdout_text:
+                try:
+                    migration_output = json.loads(stdout_text)
+                except Exception:
+                    pass
+
+            passed = migration_output.get("success", False)
+            error_msg = migration_output.get("error", "")
+            stderr = migration_output.get("stderr", "")
+            metrics = migration_output.get("metrics", {})
+            created_files = metrics.get("files_created", [])
+
+            errors_str = ""
+            if not passed:
+                errors_str = f"{error_msg}\n{stderr}"[:1000]
+
+            return passed, errors_str, created_files
+        except Exception as e:
+            return False, f"Lỗi thực thi check_migration: {e}", []

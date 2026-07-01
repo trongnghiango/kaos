@@ -544,6 +544,27 @@ class TaskRunner:
             logger.error(f"      ❌ [Gatekeeper] Test check exception: {e}")
             return TestResult(passed=False, error=f"Exception: {e}")
 
+    async def run_gatekeeper_migration(
+        self,
+        task: Any,
+        attempt: int,
+    ) -> Tuple[bool, str, List[str]]:
+        """Run database migration check."""
+        logger.info("   🛡️  [Gatekeeper] Running database migration check...")
+        try:
+            passed, err_msg, created_files = await self.gatekeeper.check_migration(
+                module=task.module,
+                task_id=f"{task.task_id}_a{attempt}",
+            )
+            if passed:
+                logger.info("      ✅ Database migration OK")
+                return True, "", created_files
+            logger.warning("      ❌ Database migration check failed")
+            return False, err_msg, []
+        except Exception as e:
+            logger.error(f"      ❌ [Gatekeeper] Migration check exception: {e}")
+            return False, f"Exception: {e}", []
+
     @staticmethod
     def is_new_error(
         compile_errors_str: str,

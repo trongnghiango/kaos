@@ -636,6 +636,15 @@ class TaskQueueEngine:
                 error_msg = arch_err or "Architecture boundary check failed"
                 return False, "arch", error_msg
 
+            # Gatekeeper database migration check
+            migration_passed, migration_err, new_migrations = await self.runner.run_gatekeeper_migration(task, attempt)
+            if not migration_passed:
+                error_msg = migration_err or "Database migration validation failed"
+                return False, "migration", error_msg
+
+            if new_migrations:
+                files_created = list(set(files_created + new_migrations))
+
             # Test Check check
             if not test_res.passed:
                 error_msg = test_res.error or "Tests failed"

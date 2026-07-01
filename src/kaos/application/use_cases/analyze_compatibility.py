@@ -104,7 +104,12 @@ class AnalyzeCompatibilityUseCase:
             )
 
         logger.info(f"🦆 [KAOS] Đang gọi Analyzer LLM để sinh các Proposal Options tại: {output_json.name}...")
-        exit_code, out_logs = await self.llm_provider.run_agent(AgentInstruction.from_raw(instruction, timeout=float(self.config.timeout_secs_analyzer)))
+        agent_instruction = AgentInstruction.from_raw(
+            instruction,
+            timeout=float(self.config.timeout_secs_analyzer),
+            max_turns=15
+        )
+        exit_code, out_logs = await self.llm_provider.run_agent(agent_instruction)
 
         if exit_code != 0:
             raise RuntimeError(f"Analyzer LLM chạy gặp lỗi (exit code {exit_code}): {out_logs[:500]}")

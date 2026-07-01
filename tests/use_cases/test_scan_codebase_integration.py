@@ -251,3 +251,59 @@ class TestScanCodebaseIntegration:
         load_node = next(n for n in nodes if n.function_name == "loadModule")
         # Dynamic import should appear in imports list as a module with wildcard import name
         assert any(imp.module == "./module" and "*" in imp.imported_names for imp in load_node.imports)
+
+    @pytest.mark.asyncio
+    async def test_integration_dynamic_and_indirect_calls(self, tmp_path, use_case):
+        """Kiểm tra khả năng phát hiện dynamic/indirect calls thông qua biến đại diện (aliases) & dynamic property access."""
+        uc, repo = use_case
+        project_dir = tmp_path / "ts-dyn-proj"
+        project_dir.mkdir(parents=True)
+        src_dir = project_dir / "src"
+        src_dir.mkdir(parents=True)
+
+        # Code TypeScript chứa các trường hợp alias, callback và dynamic access
+        test_file = src_dir / "dynamic_calls.ts"
+        test_file.write_text(
+            "export function testDynamicCalls(callback: Function) {\n"
+            "  const log = console.log;\n"
+            "  log('hello');\n"
+            "\n"
+            "  const svc = helperService;\n"
+            "  svc.doSomething();\n"
+            "\n"
+            "  const route = 'execute';\n"
+            "  actions[route]();\n"
+            "\n"
+            "  callback('done');\n"
+            "}\n",
+            encoding="utf-8",
+        )
+
+        subprocess.run(["git", "init"], cwd=project_dir, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=project_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project_dir, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=project_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=project_dir, check=True)
+
+        target_path = str(src_dir)
+        result = await uc.execute(
+            target_path=target_path,
+            structural_only=True,
+            incremental=False,
+        )
+        assert result["status"] == "scanned"
+
+        nodes = await repo.load_all()
+        node = next(n for n in nodes if n.function_name == "testDynamicCalls")
+
+        # 1. Alias biến 'log' -> 'console.log'
+        assert "console.log" in node.callee_functions
+
+        # 2. Alias service 'svc.doSomething' -> 'helperService.doSomething'
+        assert "helperService.doSomething" in node.callee_functions
+
+        # 3. Dynamic call 'actions[route]()' -> 'actions.*'
+        assert "actions.*" in node.callee_functions
+
+        # 4. Callback invocation
+        assert "callback" in node.callee_functions

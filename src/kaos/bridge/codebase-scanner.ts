@@ -180,23 +180,77 @@ function extractImportInfo(node: ts.ImportDeclaration): ImportInfo | null {
 
 function extractCalleeNames(node: ts.Node, sourceFile: ts.SourceFile): string[] {
   const callees: string[] = [];
+  const aliasMap = new Map<string, string>();
 
+  // 1. Quét cục bộ để tìm aliases (biến trỏ đến hàm khác)
+  function findAliases(n: ts.Node) {
+    if (ts.isVariableDeclaration(n)) {
+      const nameNode = n.name;
+      const initNode = n.initializer;
+      if (ts.isIdentifier(nameNode) && initNode) {
+        if (ts.isIdentifier(initNode)) {
+          aliasMap.set(nameNode.text, initNode.text);
+        } else if (ts.isPropertyAccessExpression(initNode)) {
+          aliasMap.set(nameNode.text, initNode.getText(sourceFile));
+        }
+      }
+    } else if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      const leftNode = n.left;
+      const rightNode = n.right;
+      if (ts.isIdentifier(leftNode)) {
+        if (ts.isIdentifier(rightNode)) {
+          aliasMap.set(leftNode.text, rightNode.text);
+        } else if (ts.isPropertyAccessExpression(rightNode)) {
+          aliasMap.set(leftNode.text, rightNode.getText(sourceFile));
+        }
+      }
+    }
+    ts.forEachChild(n, findAliases);
+  }
+
+  findAliases(node);
+
+  // 2. Quét các cuộc gọi hàm
   function walk(n: ts.Node) {
     if (ts.isCallExpression(n)) {
       const expr = n.expression;
       if (ts.isPropertyAccessExpression(expr)) {
-        // obj.method() → "obj.method"
-        callees.push(expr.getText(sourceFile));
+        // obj.method()
+        const fullExprText = expr.getText(sourceFile);
+        const parts = fullExprText.split('.');
+        const base = parts[0];
+        
+        if (aliasMap.has(base)) {
+          const resolvedBase = aliasMap.get(base)!;
+          const resolvedExpr = [resolvedBase, ...parts.slice(1)].join('.');
+          callees.push(resolvedExpr);
+        } else {
+          callees.push(fullExprText);
+        }
       } else if (ts.isIdentifier(expr)) {
-        // function() → "function"
-        callees.push(expr.text);
+        // function()
+        const name = expr.text;
+        if (aliasMap.has(name)) {
+          callees.push(aliasMap.get(name)!);
+        } else {
+          callees.push(name);
+        }
+      } else if (ts.isElementAccessExpression(expr)) {
+        // obj[methodName]()
+        const objExpr = expr.expression;
+        const objText = objExpr.getText(sourceFile);
+        if (aliasMap.has(objText)) {
+          callees.push(`${aliasMap.get(objText)!}.*`);
+        } else {
+          callees.push(`${objText}.*`);
+        }
       }
     }
     ts.forEachChild(n, walk);
   }
 
   walk(node);
-  return callees;
+  return Array.from(new Set(callees));
 }
 
 function extractImports(sourceFile: ts.SourceFile): ImportInfo[] {

@@ -41,13 +41,30 @@ class JsonCodeGraphRepository(CodeGraphRepositoryPort):
         self.callers_file = self.kb_dir / "callers_index.json"
         self.causal_file = self.kb_dir / "causal_graph.json"
 
+        self._cached_nodes: Optional[List[CodeFunctionNode]] = None
+        self._index_by_file: Dict[str, List[CodeFunctionNode]] = {}
+        self._index_by_caller: Dict[str, List[CodeFunctionNode]] = {}
+
         logger.info(f"📂 Knowledge graph directory: {self.kb_dir}")
+
+    def _build_in_memory_indexes(self, nodes: List[CodeFunctionNode]) -> None:
+        """Xây dựng lại các index trong bộ nhớ để truy vấn nhanh."""
+        self._cached_nodes = nodes
+        self._index_by_file = {}
+        self._index_by_caller = {}
+        for n in nodes:
+            self._index_by_file.setdefault(n.file_path, []).append(n)
+            for callee in n.callee_functions:
+                self._index_by_caller.setdefault(callee, []).append(n)
 
     # ── Save ────────────────────────────────────────────────────────────
 
     async def save_all(self, nodes: List[CodeFunctionNode]) -> None:
         """Lưu toàn bộ nodes + rebuild 3 indexes."""
-        # 1. Lưu functions.json
+        # 1. Cập nhật in-memory cache & indexes
+        self._build_in_memory_indexes(nodes)
+
+        # 2. Lưu functions.json
         data = [asdict(n) for n in nodes]
         self.functions_file.write_text(
             json.dumps(data, indent=2, ensure_ascii=False, default=str),
@@ -55,7 +72,7 @@ class JsonCodeGraphRepository(CodeGraphRepositoryPort):
         )
         logger.info(f"  💾 Saved {len(nodes)} nodes to functions.json")
 
-        # 2. Build index_by_file
+        # 3. Build index_by_file
         file_index: Dict[str, List[str]] = {}
         for n in nodes:
             file_index.setdefault(n.file_path, []).append(n.function_name)
@@ -64,7 +81,7 @@ class JsonCodeGraphRepository(CodeGraphRepositoryPort):
             encoding="utf-8",
         )
 
-        # 3. Build callers_index (reverse lookup)
+        # 4. Build callers_index (reverse lookup)
         callers_index: Dict[str, List[str]] = {}
         for n in nodes:
             for callee in n.callee_functions:
@@ -75,7 +92,7 @@ class JsonCodeGraphRepository(CodeGraphRepositoryPort):
             encoding="utf-8",
         )
 
-        # 4. Build causal_graph
+        # 5. Build causal_graph
         causal_graph: Dict[str, Dict[str, Any]] = {}
         for n in nodes:
             key = f"{n.file_path}::{n.function_name}"
@@ -100,6 +117,9 @@ class JsonCodeGraphRepository(CodeGraphRepositoryPort):
 
     async def load_all(self) -> List[CodeFunctionNode]:
         """Đọc toàn bộ nodes từ storage."""
+        if self._cached_nodes is not None:
+            return list(self._cached_nodes)
+
         if not self.functions_file.exists():
             logger.info("  ℹ️  No existing knowledge graph found")
             return []
@@ -131,7 +151,8 @@ class JsonCodeGraphRepository(CodeGraphRepositoryPort):
             nodes.append(CodeFunctionNode(**n_copy))
 
         logger.info(f"  📖 Loaded {len(nodes)} nodes from knowledge graph")
-        return nodes
+        self._build_in_memory_indexes(nodes)
+        return list(self._cached_nodes)
 
     # ── Query ───────────────────────────────────────────────────────────
 
@@ -165,42 +186,41 @@ class JsonCodeGraphRepository(CodeGraphRepositoryPort):
         file_path: str,
     ) -> List[CodeFunctionNode]:
         """Lấy tất cả functions trong 1 file."""
-        all_nodes = await self.load_all()
-        return [n for n in all_nodes if n.file_path == file_path]
+        if self._cached_nodes is None:
+            await self.load_all()
+        return list(self._index_by_file.get(file_path, []))
 
     async def get_affected_functions(
         self,
         file_paths: List[str],
     ) -> List[CodeFunctionNode]:
         """Tìm functions bị ảnh hưởng bởi file thay đổi (trực tiếp + gián tiếp)."""
-        all_nodes = await self.load_all()
-        path_set = set(file_paths)
+        if self._cached_nodes is None:
+            await self.load_all()
 
-        # Tập hợp function identifiers bị ảnh hưởng
-        affected: set = set()
+        affected_map: Dict[str, CodeFunctionNode] = {}
 
-        # Trực tiếp: functions trong file thay đổi
-        for n in all_nodes:
-            if n.file_path in path_set:
-                affected.add(f"{n.file_path}::{n.function_name}")
+        # 1. Trực tiếp: các functions trong các file thay đổi
+        for path in file_paths:
+            for n in self._index_by_file.get(path, []):
+                key = f"{n.file_path}::{n.function_name}"
+                affected_map[key] = n
 
-        # Gián tiếp: functions gọi functions trong file thay đổi
-        changed_funcs = {
-            n.function_name for n in all_nodes if n.file_path in path_set
-        }
-        for n in all_nodes:
-            if any(callee in changed_funcs for callee in n.callee_functions):
-                affected.add(f"{n.file_path}::{n.function_name}")
+        # 2. Gián tiếp: các functions gọi các functions bị thay đổi
+        changed_funcs = {n.function_name for n in affected_map.values()}
+        for func_name in changed_funcs:
+            for caller_node in self._index_by_caller.get(func_name, []):
+                key = f"{caller_node.file_path}::{caller_node.function_name}"
+                affected_map[key] = caller_node
 
-        return [
-            n
-            for n in all_nodes
-            if f"{n.file_path}::{n.function_name}" in affected
-        ]
+        return list(affected_map.values())
 
     async def get_stats(self) -> Dict[str, Any]:
         """Thống kê: tổng số nodes, số files, số functions exported..."""
-        all_nodes = await self.load_all()
+        if self._cached_nodes is None:
+            await self.load_all()
+
+        all_nodes = self._cached_nodes
         if not all_nodes:
             return {
                 "total_nodes": 0,
@@ -210,7 +230,7 @@ class JsonCodeGraphRepository(CodeGraphRepositoryPort):
                 "enriched_count": 0,
             }
 
-        unique_files = set(n.file_path for n in all_nodes)
+        unique_files = set(self._index_by_file.keys())
         exported = sum(1 for n in all_nodes if n.is_exported)
         async_funcs = sum(1 for n in all_nodes if n.is_async)
         enriched = sum(1 for n in all_nodes if n.description)

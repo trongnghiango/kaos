@@ -60,8 +60,14 @@ function runCmd(cmd: string, cwd: string = REPO_ROOT): { success: boolean; stdou
 
 function outputResult(result: TaskResult) {
   // Python Orchestrator sẽ đọc cái này
-  console.log(JSON.stringify(result));
-  process.exit(0);
+  const data = JSON.stringify(result) + '\n';
+  if (process.stdout.write(data)) {
+    process.exit(0);
+  } else {
+    process.stdout.once('drain', () => {
+      process.exit(0);
+    });
+  }
 }
 
 // ─── Action Handlers ───────────────────────────────────────────────────────

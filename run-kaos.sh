@@ -6,14 +6,11 @@ set -e
 
 # Xác định thư mục gốc của STAX_ASP
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-
-# Thiết lập biến môi trường trỏ codebase đích đến STAX_ASP
-export KAOS_TARGET_PATH="$REPO_ROOT/STAX_ASP"
-export PYTHONPATH="$REPO_ROOT/kaos/src:$PYTHONPATH"
+export KAOS_TARGET_PATH="$(cd "$SCRIPT_DIR/../STAX_ASP" && pwd)"
+export PYTHONPATH="$SCRIPT_DIR/src:$PYTHONPATH"
 
 # Thiết lập NODE_PATH để Node.js giải quyết các module từ backend/node_modules và hermit global
-export NODE_PATH="/home/ka/.config/goose/mcp-hermit/.hermit/node/lib/node_modules:$REPO_ROOT/backend/node_modules:$REPO_ROOT/tools/kaos/node_modules"
+export NODE_PATH="/home/ka/.config/goose/mcp-hermit/.hermit/node/lib/node_modules:$KAOS_TARGET_PATH/backend/node_modules:$SCRIPT_DIR/node_modules"
 
 # Kiểm tra Python Virtual Environment
 VENV_PATH="$REPO_ROOT/tools/autoresearch/python/venv"

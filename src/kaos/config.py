@@ -10,6 +10,7 @@ import uuid
 import time
 import logging
 from pathlib import Path
+from typing import Optional
 
 # ==========================================
 # TARGET PATH RESOLUTION
@@ -145,13 +146,60 @@ def load_runner_config() -> dict:
         },
         "paths": {
             "node_path": "/usr/bin/node",
-            "tsx_cli_relative": "/home/ka/.config/goose/mcp-hermit/.hermit/node/lib/node_modules/tsx/dist/cli.mjs"
+            "tsx_cli_relative": "tsx"
         }
     }
 
 CONFIG = load_runner_config()
 EXECUTION_CONF = CONFIG.get("execution", {})
 PATHS_CONF = CONFIG.get("paths", {})
+
+
+# ==========================================
+# TSX PATH RESOLUTION
+# ==========================================
+def resolve_tsx_path(target_path: Optional[Path] = None) -> str:
+    """Tìm tsx cli từ node_modules của dự án target."""
+    target = target_path or TARGET_PATH
+    candidates = [
+        target / "node_modules" / ".bin" / "tsx",
+        target / "node_modules" / "tsx" / "dist" / "cli.mjs",
+        Path.home() / ".nvm" / "versions" / "node" / "*" / "bin" / "tsx",
+        Path("/usr/local/bin/tsx"),
+        Path("/usr/bin/tsx"),
+    ]
+    for c in candidates:
+        try:
+            if c.exists() or str(c).endswith("tsx"):
+                import shutil
+                found = shutil.which("tsx")
+                if found:
+                    return found
+        except OSError:
+            continue
+    import shutil
+    return shutil.which("tsx") or "tsx"
+
+
+# ==========================================
+# SCAN CONFIG
+# ==========================================
+SCAN_CONFIG: dict = {
+    "structural_only": False,
+    "incremental": True,
+    "llm_concurrency": 3,
+    "timeout_secs_per_function": 60,
+    "max_functions_per_enrich_batch": 50,
+    "exclude_patterns": [
+        "node_modules/",
+        "dist/",
+        ".git/",
+        "*.test.ts",
+        "*.spec.ts",
+        "*.d.ts",
+    ],
+}
+
 
 # ==========================================
 # TELEGRAM MONITOR CONFIG

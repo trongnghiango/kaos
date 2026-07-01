@@ -65,6 +65,55 @@ from kaos.config import (
 )
 
 
+
+def create_scan_container(target_path: Path) -> 'Container':
+    """Factory method — tạo container chuyên cho scan operation."""
+    from kaos.infrastructure.adapters.ts_code_scanner import TsCodeScannerAdapter
+    from kaos.infrastructure.adapters.json_codegraph_repo import JsonCodeGraphRepository
+    from kaos.config import SCAN_CONFIG, resolve_tsx_path, TARGET_PATH
+
+    container = Container.__new__(Container)
+    
+    # Config
+    container.target_path = str(target_path)
+    container.target_module = 'scan'
+    container.config = ExecutionConfig(
+        max_retries_coder=MAX_RETRIES_CODER,
+        max_retries_planner=MAX_RETRIES_PLANNER,
+        max_retries_analyzer=MAX_RETRIES_ANALYZER,
+        timeout_secs_coder=TIMEOUT_SECS_CODER,
+        timeout_secs_planner=TIMEOUT_SECS_PLANNER,
+        timeout_secs_analyzer=TIMEOUT_SECS_ANALYZER,
+        timeout_secs_gatekeeper=TIMEOUT_SECS_GATEKEEPER,
+    )
+    
+    # LLM adapter for scan (only wired if KAOS_LLM_PROVIDER env var is set)
+    llm_provider = None
+    if os.environ.get('KAOS_LLM_PROVIDER'):
+        resolved_provider = os.environ['KAOS_LLM_PROVIDER']
+        llm_provider = container._create_llm_adapter(resolved_provider)
+    container.llm_adapter = llm_provider
+    
+    # Scan adapters
+    tsx_path = resolve_tsx_path(target_path)
+    container.scanner = TsCodeScannerAdapter(
+        llm_provider=container.llm_adapter,
+        tsx_path=tsx_path,
+    )
+    container.code_graph_repo = JsonCodeGraphRepository(str(target_path))
+    
+    # Minimal session meta for scan
+    session_id = generate_session_id()
+    container.session_meta = SessionMetadata(
+        session_id=session_id,
+        target_module='scan',
+        branch_name=f'scan/{session_id.split("_")[0]}',
+    )
+    container.tmp_dir = get_tmp_dir(session_id)
+    
+    return container
+
+
 class Container:
     """KAOS Dependency Injection Container"""
 
@@ -257,6 +306,15 @@ class Container:
             git=self.git_adapter,
             storage=self.storage_adapter,
             target_path=resolved_target,
+        )
+
+    def resolve_scan_codebase(self) -> 'ScanCodebaseUseCase':
+        """Resolve ScanCodebaseUseCase với scanner + repo đã được wire."""
+        from kaos.application.use_cases.scan_codebase import ScanCodebaseUseCase
+        return ScanCodebaseUseCase(
+            scanner=self.scanner,
+            repo=self.code_graph_repo,
+            config=self.config,
         )
 
     # ── Telegram Monitor & Control Helpers ───────────────────────

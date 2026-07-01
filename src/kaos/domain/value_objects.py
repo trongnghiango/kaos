@@ -36,6 +36,7 @@ class ExecutionConfig:
     timeout_secs_analyzer: int = 300
     timeout_secs_gatekeeper: int = 120
     parallel_workers: int = 5
+    llm_concurrency: int = 3
 
 
 @dataclass

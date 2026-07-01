@@ -48,6 +48,42 @@ kaos [options] [raw_data]
 | `--run-dry` | Chạy phân tích dry-run đối chiếu cấu trúc schema mà không sinh task code thực tế. | `kaos --run-dry raw_data.xlsx` |
 | `--parallel` | Số luồng task xử lý song song tối đa (nếu adapter hỗ trợ). | `--parallel 3` |
 
+### Subcommand: `kaos scan` — Knowledge Graph Scanner (v2.0.0+)
+
+Subcommand `scan` dùng để quét mã nguồn và xây dựng **Knowledge Graph** (Call Graph, Function Index, Import Map) phục vụ cho context routing của engine.
+
+| Flag | Ý nghĩa | Ví dụ |
+|---|---|---|
+| `--target-path` | **(Bắt buộc)** Đường dẫn đến codebase cần scan. | `--target-path /path/to/project` |
+| `--structural-only` | Chỉ scan cấu trúc (AST), bỏ qua bước làm giàu ngữ nghĩa bằng LLM. | `--structural-only` |
+| `--incremental` | Chỉ scan các file đã thay đổi từ lần commit cuối (`git diff HEAD`). | `--incremental` |
+| `--files` | Danh sách files cụ thể cần scan (phân cách bằng dấu phẩy). | `--files src/a.ts,src/b.ts` |
+
+**Cách hoạt động:**
+1. Dùng **TypeScript Compiler API** (`bridge/codebase-scanner.ts`) phân tích AST để trích xuất: functions, methods, arrow functions, imports, callees, file hash.
+2. Gọi **Python adapter** (`ts_code_scanner.py`) qua subprocess với PATH sanitized (loại bỏ Hermit wrapper — P5 fix).
+3. Lưu kết quả vào **JSON Repository** (`~/.kaos/{project}/knowledge_graph/`) với 4 index files: `functions.json`, `index_by_file.json`, `callers_index.json`, `causal_graph.json`.
+4. Nếu không dùng `--structural-only`, gọi LLM để làm giàu ngữ nghĩa: mô tả function, preconditions, exceptions.
+
+**Kết quả thực tế (2026-06-30):**
+```bash
+# Quét toàn bộ backend/src của STAX_ASP
+kaos scan --structural-only --target-path /path/to/STAX_ASP/backend/src
+# → 1,392 functions / 460 files / 2.7 giây ✅
+```
+
+**Ví dụ:**
+```bash
+# Scan structural (nhanh, không cần LLM)
+kaos scan --target-path /path/to/STAX_ASP --structural-only
+
+# Scan incremental (chỉ files thay đổi)
+kaos scan --target-path /path/to/STAX_ASP --structural-only --incremental
+
+# Scan toàn bộ bao gồm semantic enrichment
+kaos scan --target-path /path/to/STAX_ASP
+```
+
 ---
 
 ## 3. Các kịch bản sử dụng (Cover toàn bộ trường hợp)

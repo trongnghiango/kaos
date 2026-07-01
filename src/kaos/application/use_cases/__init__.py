@@ -7,6 +7,7 @@ from kaos.application.use_cases.analyze_compatibility import AnalyzeCompatibilit
 from kaos.application.use_cases.scout_coordinator import ScoutCoordinator
 from kaos.application.use_cases.act_executor import ActExecutor, ActTask, TaskExecutionResult
 from kaos.application.use_cases.git_auto_manager import GitAutoManager
+from kaos.application.use_cases.scan_codebase import ScanCodebaseUseCase
 
 __all__ = [
     "ExtractSchemaUseCase",
@@ -20,4 +21,5 @@ __all__ = [
     "ActTask",
     "TaskExecutionResult",
     "GitAutoManager",
+    "ScanCodebaseUseCase",
 ]

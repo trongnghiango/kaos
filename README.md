@@ -29,6 +29,57 @@ Kể từ phiên bản `v0.2.0`, KAOS sử dụng **Redis (Hash + Set)** giả l
 
 ---
 
+## 🧠 Knowledge Graph Scanner (v2.0.0+)
+
+KAOS có khả năng quét mã nguồn và xây dựng **Knowledge Graph** — hệ thống index function-level cho toàn bộ codebase đích, phục vụ context routing cho Agent.
+
+### Kiến trúc
+```
+CLI: kaos scan --target-path <path>
+  └─ ScanCodebaseUseCase
+       ├─ structural: TS Compiler API AST → CodeFunctionNode
+       ├─ semantic: LLM enrich (optional)
+       ├─ call graph: caller → callee mapping
+       └─ persist: JSON (4 index files)
+```
+
+### Tính năng chính
+- **AST-level scan** — trích xuất functions, methods, imports, callees, file hash
+- **Incremental scan** — chỉ quét files thay đổi từ `git HEAD`
+- **Structural-only mode** — không cần LLM, scan nhanh (1.3s cho 9 files)
+- **PATH sanitization** — loại bỏ Hermit wrapper khi gọi TypeScript script
+- **4 JSON indexes** — `functions.json`, `index_by_file.json`, `callers_index.json`, `causal_graph.json`
+- **Git Sandbox** — cách ly workspace cho mỗi task: `kaos-sandbox/{task_id}`
+
+### Kết quả thực tế (2026-06-30)
+```bash
+# Quét toàn bộ backend/src của STAX_ASP (NestJS Clean Architecture)
+kaos scan --structural-only --target-path /path/to/STAX_ASP/backend/src
+# → 1,392 functions / 460 files / 2.7 giây ✅
+```
+
+### Sử dụng
+```bash
+# Scan structural (nhanh)
+kaos scan --target-path /path/to/project --structural-only
+
+# Scan incremental
+kaos scan --target-path /path/to/project --structural-only --incremental
+```
+
+### Clean Architecture layers
+| Layer | File | Vai trò |
+|---|---|---|
+| Domain | `domain/code_graph.py` | Entities: `CodeFunctionNode`, `ImportInfo` |
+| Application | `application/use_cases/scan_codebase.py` | Orchestrator use case |
+| Ports | `application/ports.py` | `CodeScannerPort`, `CodeGraphRepositoryPort` |
+| Adapters | `infrastructure/adapters/ts_code_scanner.py` | Python → TS subprocess |
+| Adapters | `infrastructure/adapters/json_codegraph_repo.py` | JSON persistence |
+| Adapters | `infrastructure/adapters/git_sandbox.py` | Git branch isolation |
+| Bridge | `bridge/codebase-scanner.ts` | TypeScript Compiler API parser |
+
+---
+
 ## ⚙️ Hướng dẫn thiết lập & Khởi chạy
 
 ### 1. Khởi chạy Redis Stack & RedisInsight

@@ -169,6 +169,11 @@ class TaskQueueEngine:
         ]
         self.decision_engine = DecisionEngine(rules=default_rules)
 
+        # Config Git Sandbox
+        from kaos.infrastructure.adapters.git_sandbox import GitSandboxAdapter
+        self.sandbox = GitSandboxAdapter(self.target_path)
+        self.sandbox_enabled = (Path(self.target_path) / ".git").exists()
+
     def _resolve_git(self, git: Optional[GitPort]) -> GitPort:
         if git is not None:
             return git
@@ -663,6 +668,31 @@ class TaskQueueEngine:
                 "compatibility_score": self.report.compatibility_score,
                 "reasoning": self.report.reasoning,
             })
+
+        # [MỚI] Tra cứu knowledge graph cho function liên quan
+        if hasattr(self, '_code_graph_repo') and self._code_graph_repo:
+            try:
+                related = asyncio.get_event_loop().run_until_complete(
+                    self._code_graph_repo.search_functions(task.title)
+                )
+                if related:
+                    ctx["codebase_knowledge"] = [
+                        {
+                            "function": n.function_name,
+                            "file": n.file_path,
+                            "lines": f"{n.start_line}-{n.end_line}",
+                            "description": n.description,
+                            "preconditions": n.preconditions[:5],
+                            "exceptions": n.exceptions[:5],
+                            "side_effects": n.side_effects[:3],
+                            "callers": n.caller_functions[:5],
+                            "callees": n.callee_functions[:5],
+                        }
+                        for n in related[:8]  # Giới hạn 8 functions để tránh tràn context
+                    ]
+            except Exception as e:
+                logger.warning(f"⚠️ Knowledge graph lookup failed: {e}")
+
         return ctx
 
     # ────────────── 4a. PLANNER HELPER ──────────────────────────────
@@ -1276,6 +1306,7 @@ class TaskQueueEngine:
         """
         Execute one task: Planner → Coder → Evaluator → Gatekeeper (compile + test).
         Delegates to helper methods; implements AutoFixer + Escalation.
+        Run inside Git sandbox branch if sandbox_enabled is True.
         """
         if task.status == "SUCCESS":
             logger.info(f"   ⏭️  [{task.task_id}] Already SUCCESS — skipping.")
@@ -1290,6 +1321,18 @@ class TaskQueueEngine:
 
         if self.notification:
             await self.notification.send_message(f"⏳ <b>[KAOS]</b> Bắt đầu thực thi Task <code>{task.task_id}</code>: {task.title}")
+
+        # 🔨 Create Git Sandbox branch (if enabled)
+        use_sandbox = self.sandbox_enabled
+        if use_sandbox:
+            try:
+                await self.sandbox.create_sandbox(task.task_id, base_branch="develop")
+            except Exception as e:
+                logger.error(f"   ❌  [{task.task_id}] Failed to create sandbox branch: {e}")
+                task.status = "FAILED"
+                task.result = {"success": False, "error": f"Failed to create sandbox: {str(e)}"}
+                self._stats["failed"] += 1
+                return False
 
         # Build context file (file-based, backward compat)
         task_ctx = self._build_task_context(task)
@@ -1317,20 +1360,54 @@ class TaskQueueEngine:
             task.result = result
 
             if result.get("success", False):
-                task.status = "SUCCESS"
-                self._stats["completed"] += 1
-                self._save_queue_status()
-                logger.info(f"   ✅  [{task.task_id}] All checks PASSED")
-                if self.notification:
-                    await self.notification.send_message(f"✅ <b>[KAOS]</b> Task <code>{task.task_id}</code> thành công!")
-                return True
+                # 🔀 Merge sandbox back into develop (if enabled)
+                if use_sandbox:
+                    merged, conflicts = await self.sandbox.merge_back(task.task_id, target_branch="develop")
+                    if merged:
+                        task.status = "SUCCESS"
+                        self._stats["completed"] += 1
+                        self._save_queue_status()
+                        logger.info(f"   ✅  [{task.task_id}] All checks PASSED & Merged")
+                        if self.notification:
+                            await self.notification.send_message(f"✅ <b>[KAOS]</b> Task <code>{task.task_id}</code> thành công và đã merge vào develop!")
+                        return True
+                    else:
+                        # Merge conflict -> Rollback sandbox
+                        await self.sandbox.rollback(task.task_id, target_branch="develop")
+                        task.status = "FAILED"
+                        task.result = {"success": False, "error": f"Merge conflict in files: {conflicts}"}
+                        self._stats["failed"] += 1
+                        self._save_queue_status()
+                        logger.error(f"   ⛔ Task {task.task_id} failed due to merge conflicts: {conflicts}")
+                        if self.notification:
+                            await self.notification.send_alert(
+                                title=f"Task {task.task_id} Merge Conflict",
+                                details=f"Task: {task.title}\nConflicts: {conflicts}",
+                                level="ERROR"
+                            )
+                        return False
+                else:
+                    task.status = "SUCCESS"
+                    self._stats["completed"] += 1
+                    self._save_queue_status()
+                    logger.info(f"   ✅  [{task.task_id}] All checks PASSED")
+                    if self.notification:
+                        await self.notification.send_message(f"✅ <b>[KAOS]</b> Task <code>{task.task_id}</code> thành công!")
+                    return True
+
             elif result.get("skipped", False):
+                # Task skip -> Dọn dẹp sandbox
+                if use_sandbox:
+                    await self.sandbox.rollback(task.task_id, target_branch="develop")
                 self._save_queue_status()
                 logger.info(f"   ✅  [{task.task_id}] Skipped by classifier")
                 if self.notification:
                     await self.notification.send_message(f"⏭️ <b>[KAOS]</b> Task <code>{task.task_id}</code> được skip.")
                 return True
             else:
+                # Task fail -> Rollback sandbox
+                if use_sandbox:
+                    await self.sandbox.rollback(task.task_id, target_branch="develop")
                 task.status = "FAILED"
                 self._stats["failed"] += 1
                 self._save_queue_status()
@@ -1343,13 +1420,26 @@ class TaskQueueEngine:
                     )
                 return False
         except asyncio.CancelledError:
+            # Cancelled -> Rollback sandbox
+            if use_sandbox:
+                await self.sandbox.rollback(task.task_id, target_branch="develop")
             task.status = "FAILED"
             task.result = {"success": False, "error": "Force terminated by user command via Telegram."}
             self._stats["failed"] += 1
             self._save_queue_status()
-            logger.warning(f"   🛑 Task {task.task_id} was CANCELLED/KILLED by Telegram command.")
+            logger.warning(f"   🛑 Task {task.task_id} was CANCELLED/KILLED. Sandbox rolled back.")
             if self.notification:
-                await self.notification.send_message(f"🛑 <b>[KAOS]</b> Task <code>{task.task_id}</code> đã bị DỪNG NÓNG theo yêu cầu người dùng.")
+                await self.notification.send_message(f"🛑 <b>[KAOS]</b> Task <code>{task.task_id}</code> đã bị DỪNG NÓNG. Sandbox rolled back.")
+            raise
+        except Exception as e:
+            # Exception -> Rollback sandbox
+            if use_sandbox:
+                await self.sandbox.rollback(task.task_id, target_branch="develop")
+            task.status = "FAILED"
+            task.result = {"success": False, "error": f"Unexpected error: {str(e)}"}
+            self._stats["failed"] += 1
+            self._save_queue_status()
+            logger.exception(f"   ❌ Unexpected error executing task {task.task_id}. Sandbox rolled back.")
             raise
         finally:
             self._active_async_tasks.pop(task.task_id, None)

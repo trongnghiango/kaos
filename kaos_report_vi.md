@@ -18,6 +18,7 @@
 | **Tạo queue tác vụ** | `AnalyzeRequirementsUseCase` → CSV | Mỗi nhiệm vụ có tiêu đề, mô tả, phụ thuộc (`depends_on`). |
 | **Thực thi (Scout → Act)** | `ActExecutor` + `TaskQueueEngine` | Tự động sinh code, chạy vòng lặp *AutoFixer* (tối đa 3 lần), nếu cần *Escalation* (budget lớn hơn). |
 | **Quản lý branch Git, tạo PR** | `GitAutoManager` (cờ `--git-auto`) | Tự động tạo branch cách ly, commit, push và mở PR. |
+| **Knowledge Graph Scanner** (v2.0.0+) | `ScanCodebaseUseCase` + `bridge/codebase-scanner.ts` | Quét AST toàn bộ codebase, xây dựng function-level call graph, import map; lưu 4 JSON indexes (`functions.json`, `index_by_file.json`, `callers_index.json`, `causal_graph.json`); hỗ trợ incremental scan và structural-only mode. |
 | **CLI điều khiển** | `cli.run_pipeline` (các phase riêng) **hoặc** `cli.run_auto_pipeline` (`--auto`) | Chạy một phase (`extract`, `analyze`, `execute`) hoặc toàn bộ pipeline Scout→Act chỉ bằng một lệnh. |
 | **DI Container** | `kaos.infrastructure.di.Container` | Kết nối các port, adapter và use‑case; dễ mở rộng cho ngôn ngữ khác. |
 

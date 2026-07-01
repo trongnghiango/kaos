@@ -7,7 +7,7 @@ tuân thủ quy tắc Dependency Inversion. Các adapter ở tầng hạ tầng 
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from kaos.domain.models import Task
 from kaos.domain.value_objects import AgentInstruction
@@ -312,4 +312,108 @@ class NotificationPort(ABC):
     @abstractmethod
     def register_command(self, command: str, handler) -> None:
         """Đăng ký command (ví dụ /kill, /status) với callback handler"""
+        pass
+
+
+class CodeScannerPort(ABC):
+    """
+    Port quét codebase để xây dựng Knowledge Graph.
+
+    Có 2 bước:
+    1. scan_structural: dùng TypeScript Compiler API, 100% chính xác
+    2. enrich_semantic: dùng LLM để điền description, preconditions, exceptions
+    """
+
+    @abstractmethod
+    async def scan_structural(
+        self,
+        target_path: str,
+        files: Optional[List[str]] = None,
+    ) -> List["CodeFunctionNode"]:
+        """
+        Quét cấu trúc codebase bằng TypeScript Compiler API.
+
+        Args:
+            target_path: Đường dẫn tuyệt đối đến codebase
+            files: Danh sách file cụ thể cần scan (None = tất cả .ts)
+
+        Returns:
+            List[CodeFunctionNode] với các trường structural đã điền
+        """
+        pass
+
+    @abstractmethod
+    async def enrich_semantic(
+        self,
+        nodes: List["CodeFunctionNode"],
+        target_path: str,
+        concurrency: int = 3,
+    ) -> List["CodeFunctionNode"]:
+        """
+        Dùng LLM để enrich ngữ nghĩa cho function nodes.
+        Gửi từng function body cô lập cho LLM để phân tích.
+
+        Args:
+            nodes: Danh sách nodes từ scan_structural (chưa enrich)
+            target_path: Đường dẫn codebase (để đọc function body)
+            concurrency: Số lượng LLM call đồng thời
+
+        Returns:
+            List[CodeFunctionNode] với các trường semantic đã điền
+        """
+        pass
+
+
+class CodeGraphRepositoryPort(ABC):
+    """
+    Port lưu trữ và truy vấn CodeFunctionNode graph.
+    Dùng JSON files (đơn giản, dễ debug) hoặc có thể thay bằng SQLite sau.
+    """
+
+    @abstractmethod
+    async def save_all(self, nodes: List["CodeFunctionNode"]) -> None:
+        """Lưu toàn bộ nodes + rebuild indexes."""
+        pass
+
+    @abstractmethod
+    async def load_all(self) -> List["CodeFunctionNode"]:
+        """Đọc toàn bộ nodes từ storage."""
+        pass
+
+    @abstractmethod
+    async def search_functions(
+        self,
+        query: str,
+        limit: int = 10,
+    ) -> List["CodeFunctionNode"]:
+        """
+        Tìm function theo tên hoặc keywords.
+        Dùng fuzzy matching đơn giản — không cần full-text search engine.
+        """
+        pass
+
+    @abstractmethod
+    async def get_functions_by_file(
+        self,
+        file_path: str,
+    ) -> List["CodeFunctionNode"]:
+        """Lấy tất cả functions trong 1 file."""
+        pass
+
+    @abstractmethod
+    async def get_affected_functions(
+        self,
+        file_paths: List[str],
+    ) -> List["CodeFunctionNode"]:
+        """
+        Tìm tất cả functions bị ảnh hưởng bởi các file thay đổi.
+        Bao gồm:
+        - Functions trực tiếp trong các file đó
+        - Functions gọi functions trong các file đó (callers)
+        """
+        pass
+
+    @abstractmethod
+    async def get_stats(self) -> Dict[str, Any]:
+        """Thống kê: tổng số nodes, số files, số functions exported..."""
         pass

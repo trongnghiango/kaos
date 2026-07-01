@@ -467,6 +467,49 @@ async def run_auto_pipeline(args) -> int:
     return 0 if all(r.success for r in results) else 1
 
 
+async def run_scan(args) -> int:
+    """Execute `kaos scan` — build knowledge graph from codebase."""
+    from kaos.config import logger, set_target_path, SCAN_CONFIG
+
+    target_path_obj = Path(args.target_path).resolve()
+    if not target_path_obj.exists():
+        logger.error(f"❌ Path does not exist: {args.target_path}")
+        return 1
+
+    # Set target path to enable config resolution
+    set_target_path(target_path_obj)
+
+    # Create scan container
+    from kaos.infrastructure.di import create_scan_container
+    container = create_scan_container(target_path_obj)
+    use_case = container.resolve_scan_codebase()
+
+    files_list = args.files.split(",") if args.files else None
+
+    logger.info(f"🔍 KAOS Codebase Scanner")
+    logger.info(f"   Target: {target_path_obj}")
+    logger.info(f"   Structural only: {args.structural_only}")
+    logger.info(f"   Incremental: {args.incremental}")
+    if files_list:
+        logger.info(f"   Files: {len(files_list)} files")
+
+    result = await use_case.execute(
+        target_path=str(target_path_obj),
+        structural_only=args.structural_only,
+        incremental=args.incremental,
+        files=files_list,
+    )
+
+    logger.info("")
+    logger.info("📊 Scan Results:")
+    logger.info(f"   Status: {result.get('status', 'unknown')}")
+    logger.info(f"   Functions found: {result.get('nodes_count', 0)}")
+    logger.info(f"   Files scanned: {result.get('files_scanned', 0)}")
+    logger.info(f"   Time: {result.get('elapsed_seconds', 0)}s")
+
+    return 0 if result.get("status") in ("scanned", "unchanged") else 1
+
+
 def main():
     # 0. Tiền xử lý cờ --target-path để thiết lập môi trường trước khi các module khác import config
     target_path = None
@@ -572,6 +615,35 @@ def main():
         action="store_true",
         help="Force chạy Act Phase kể cả khi compatibility score thấp",
     )
+
+
+    # ── Subcommand "scan" ─────────────────────────────────────────────
+    if len(sys.argv) > 1 and sys.argv[1] == "scan":
+        # Pop 'scan' từ argv để parse sub-args
+        sys.argv.pop(1)
+        scan_parser = argparse.ArgumentParser(description="🔍 KAOS Codebase Scanner")
+        scan_parser.add_argument(
+            "--target-path",
+            required=True,
+            help="Path to target TypeScript codebase",
+        )
+        scan_parser.add_argument(
+            "--structural-only",
+            action="store_true",
+            help="Only scan AST structure, skip LLM enrichment",
+        )
+        scan_parser.add_argument(
+            "--incremental",
+            action="store_true",
+            help="Only scan files changed since last git commit",
+        )
+        scan_parser.add_argument(
+            "--files",
+            help="Comma-separated specific files to scan",
+        )
+
+        scan_args = scan_parser.parse_args()
+        sys.exit(asyncio.run(run_scan(scan_args)))
 
     args = parser.parse_args()
 

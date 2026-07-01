@@ -100,6 +100,30 @@ docker compose up -d
 
 ---
 
+## 🧠 BÀI TOÁN 4: Knowledge Graph Scanner & Git Sandbox (Đã hoàn thành Phases 1-6)
+
+> **Trạng thái:** ✅ Đã implement và test thành công (2026-06-30)
+
+Đã xây dựng Knowledge Graph pipeline và Git Sandbox isolation cho KAOS engine. Xem chi tiết:
+- [`20260630_201700_HANDOFF.md`](./20260630_201700_HANDOFF.md) — Handoff chi tiết
+- [`20260630_194835_KAOS_ARCHITECTURE_PLAN.md`](./20260630_194835_KAOS_ARCHITECTURE_PLAN.md) — Kiến trúc tổng thể
+
+### Kết quả scan thực tế (2026-06-30)
+```bash
+kaos scan --structural-only --target-path STAX_ASP/backend/src
+→ 1,392 functions / 460 files / 2.7s ✅
+```
+*Bug gặp:* Thiếu `CONSTRUCTOR` trong enum → đã fix.
+
+### Tồn đọng cần xử lý
+1. **Sandbox Integration** — Tích hợp `GitSandboxAdapter` vào `task_queue_engine._execute_single_task()`
+2. **Full scan test** — Chạy `kaos scan --structural-only` trên toàn bộ STAX_ASP
+3. **Incremental scan test** — Kiểm tra `--incremental` mode
+4. **Semantic enrichment** — Wire LLM provider vào `create_scan_container`
+5. **Integration test** — Test cho `ScanCodebaseUseCase`
+
+---
+
 ## 🛠️ Kiểm tra lại trước khi tắt máy
 1. Môi trường kiểm thử hiện tại đã ổn định:
    ```bash

@@ -7,76 +7,82 @@ Dependency Injection Container for KAOS
 Khởi tạo cấu hình và trả về các Use Cases sẵn sàng sử dụng.
 """
 
-from typing import Optional, TYPE_CHECKING
 from pathlib import Path
-import asyncio
+from typing import TYPE_CHECKING
+
+# Application Ports
+from kaos.application.ports import LLMProviderPort
 
 # Domain models/configs
 from kaos.domain.value_objects import ExecutionConfig, SessionMetadata
-# Application Ports
-from kaos.application.ports import CachePort, GitPort, StoragePort, GatekeeperPort, LLMProviderPort, KnowledgeGraphPort, NotificationPort
+
 # Application Use Cases (lazily imported under TYPE_CHECKING to prevent circular imports)
 if TYPE_CHECKING:
     from kaos.application.use_cases import (
-        ExtractSchemaUseCase,
+        ActExecutor,
+        AnalyzeCompatibilityUseCase,
         AnalyzeRequirementsUseCase,
+        ClassifyErrorUseCase,
         DetectScopeUseCase,
         ExecuteWorkflowUseCase,
-        ClassifyErrorUseCase,
-        AnalyzeCompatibilityUseCase,
-        ScoutCoordinator,
-        ActExecutor,
+        ExtractSchemaUseCase,
         GitAutoManager,
+        ScoutCoordinator,
     )
+    from kaos.application.use_cases.scan_codebase import ScanCodebaseUseCase
 
 # Infrastructure Adapters
+# Thống nhất constants từ config.py hiện hành
+import os
+import time
+
+from kaos.config import (
+    CONFIG,
+    MAX_RETRIES_ANALYZER,
+    MAX_RETRIES_CODER,
+    MAX_RETRIES_PLANNER,
+    TARGET_PATH,
+    TELEGRAM_CHAT_ID,
+    TELEGRAM_MONITOR_ENABLED,
+    TELEGRAM_TOKEN,
+    TIMEOUT_SECS_ANALYZER,
+    TIMEOUT_SECS_CODER,
+    TIMEOUT_SECS_GATEKEEPER,
+    TIMEOUT_SECS_PLANNER,
+    TMP_DIR,
+    generate_session_id,
+    get_tmp_dir,
+    logger,
+)
 from kaos.infrastructure.adapters import (
-    GitCliAdapter,
-    FileStorageAdapter,
-    TsGatekeeperAdapter,
-    GooseCliAdapter,
-    ClaudeCodeAdapter,
     AntigravityAdapter,
     ClaudeCodeAdapter,
     FileCacheAdapter,
+    FileStorageAdapter,
+    GitCliAdapter,
+    GooseCliAdapter,
     RedisGraphAdapter,
     TelegramAdapter,
-)
-
-# Thống nhất constants từ config.py hiện hành
-import os
-from kaos.config import (
-    generate_session_id,
-    get_tmp_dir,
-    MAX_RETRIES_CODER,
-    MAX_RETRIES_PLANNER,
-    MAX_RETRIES_ANALYZER,
-    TIMEOUT_SECS_CODER,
-    TIMEOUT_SECS_PLANNER,
-    TIMEOUT_SECS_ANALYZER,
-    TIMEOUT_SECS_GATEKEEPER,
-    CONFIG,
-    TMP_DIR,
-    TARGET_PATH,
-    TELEGRAM_TOKEN,
-    TELEGRAM_CHAT_ID,
-    TELEGRAM_MONITOR_ENABLED,
-    logger,
+    TsGatekeeperAdapter,
 )
 
 
+def create_scan_container(target_path: Path, llm_provider_name: str | None = None) -> Container:
+    """Factory method — tạo container chuyên cho scan operation.
 
-def create_scan_container(target_path: Path) -> 'Container':
-    """Factory method — tạo container chuyên cho scan operation."""
-    from kaos.infrastructure.adapters.ts_code_scanner import TsCodeScannerAdapter
+    Args:
+        target_path: Path to project to scan
+        llm_provider_name: Optional LLM provider name (ưu tiên cao hơn env var)
+    """
+    from kaos.config import resolve_tsx_path
     from kaos.infrastructure.adapters.json_codegraph_repo import JsonCodeGraphRepository
-    from kaos.config import SCAN_CONFIG, resolve_tsx_path, TARGET_PATH
+    from kaos.infrastructure.adapters.ts_code_scanner import TsCodeScannerAdapter
 
     container = Container.__new__(Container)
-    
+
     # Config
     container.target_path = str(target_path)
-    container.target_module = 'scan'
+    container.target_module = "scan"
     container.config = ExecutionConfig(
         max_retries_coder=MAX_RETRIES_CODER,
         max_retries_planner=MAX_RETRIES_PLANNER,
@@ -86,14 +92,14 @@ def create_scan_container(target_path: Path) -> 'Container':
         timeout_secs_analyzer=TIMEOUT_SECS_ANALYZER,
         timeout_secs_gatekeeper=TIMEOUT_SECS_GATEKEEPER,
     )
-    
-    # LLM adapter for scan (only wired if KAOS_LLM_PROVIDER env var is set)
+
+    # LLM adapter for scan (ưu tiên CLI arg > env var > None)
+    resolved_provider = llm_provider_name or os.environ.get("KAOS_LLM_PROVIDER")
     llm_provider = None
-    if os.environ.get('KAOS_LLM_PROVIDER'):
-        resolved_provider = os.environ['KAOS_LLM_PROVIDER']
+    if resolved_provider:
         llm_provider = container._create_llm_adapter(resolved_provider)
     container.llm_adapter = llm_provider
-    
+
     # Scan adapters
     tsx_path = resolve_tsx_path(target_path)
     container.scanner = TsCodeScannerAdapter(
@@ -101,16 +107,16 @@ def create_scan_container(target_path: Path) -> 'Container':
         tsx_path=tsx_path,
     )
     container.code_graph_repo = JsonCodeGraphRepository(str(target_path))
-    
+
     # Minimal session meta for scan
     session_id = generate_session_id()
     container.session_meta = SessionMetadata(
         session_id=session_id,
-        target_module='scan',
-        branch_name=f'scan/{session_id.split("_")[0]}',
+        target_module="scan",
+        branch_name=f"scan/{session_id.split('_')[0]}",
     )
     container.tmp_dir = get_tmp_dir(session_id)
-    
+
     return container
 
 
@@ -120,8 +126,8 @@ class Container:
     def __init__(
         self,
         target_module: str = "crm",
-        branch_name: Optional[str] = None,
-        llm_provider: Optional[str] = None,
+        branch_name: str | None = None,
+        llm_provider: str | None = None,
     ):
         self.target_module = target_module
 
@@ -153,7 +159,6 @@ class Container:
 
         # ── Telegram Monitor ──────────────────────────────────────
         if TELEGRAM_MONITOR_ENABLED and TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
-            from kaos.application.ports import NotificationPort
             self.telegram = TelegramAdapter(
                 token=TELEGRAM_TOKEN,
                 chat_id=TELEGRAM_CHAT_ID,
@@ -167,9 +172,7 @@ class Container:
         # 3. Chọn LLM provider theo priority chain:
         #    CLI arg > ENV var > runner_config.json > default "goose"
         resolved_provider = (
-            llm_provider
-            or os.environ.get("KAOS_LLM_PROVIDER")
-            or CONFIG.get("llm", {}).get("provider", "goose")
+            llm_provider or os.environ.get("KAOS_LLM_PROVIDER") or CONFIG.get("llm", {}).get("provider", "goose")
         )
         self.llm_adapter = self._create_llm_adapter(resolved_provider)
         # Register Telegram commands if bot is enabled
@@ -183,8 +186,15 @@ class Container:
         """
         provider_cfg = CONFIG.get("llm", {}).get("providers", {}).get(provider_name, {})
 
+        from kaos.config import SUPPORTED_LLM_PROVIDERS
+
         if provider_name == "goose":
             return GooseCliAdapter()
+
+        elif provider_name == "openai":
+            from kaos.infrastructure.adapters.llm_adapter import DirectOpenAiAdapter
+
+            return DirectOpenAiAdapter()
 
         elif provider_name == "claude-code":
             return ClaudeCodeAdapter()
@@ -197,13 +207,11 @@ class Container:
                 poll_interval=poll_interval,
             )
 
-        elif provider_name == "claude-code":
-            return ClaudeCodeAdapter()
-
         else:
+            supported_str = ", ".join(f"'{p}'" for p in SUPPORTED_LLM_PROVIDERS)
             raise ValueError(
                 f"❌ [KAOS] Unknown LLM provider: '{provider_name}'. "
-                f"Supported: 'goose', 'claude-code', 'antigravity'. "
+                f"Supported: {supported_str}. "
                 f"Set via --llm-provider, KAOS_LLM_PROVIDER env, or runner_config.json llm.provider"
             )
 
@@ -211,10 +219,12 @@ class Container:
 
     def resolve_extract_schema(self) -> ExtractSchemaUseCase:
         from kaos.application.use_cases import ExtractSchemaUseCase
+
         return ExtractSchemaUseCase(gatekeeper=self.gatekeeper_adapter)
 
     def resolve_analyze_requirements(self) -> AnalyzeRequirementsUseCase:
         from kaos.application.use_cases import AnalyzeRequirementsUseCase
+
         return AnalyzeRequirementsUseCase(
             llm_provider=self.llm_adapter,
             storage=self.storage_adapter,
@@ -225,6 +235,7 @@ class Container:
 
     def resolve_detect_scope(self) -> DetectScopeUseCase:
         from kaos.application.use_cases import DetectScopeUseCase
+
         return DetectScopeUseCase(
             llm_provider=self.llm_adapter,
             storage=self.storage_adapter,
@@ -235,6 +246,7 @@ class Container:
 
     def resolve_classify_error(self) -> ClassifyErrorUseCase:
         from kaos.application.use_cases import ClassifyErrorUseCase
+
         return ClassifyErrorUseCase(
             llm_provider=self.llm_adapter,
             storage=self.storage_adapter,
@@ -244,6 +256,7 @@ class Container:
 
     def resolve_execute_workflow(self) -> ExecuteWorkflowUseCase:
         from kaos.application.use_cases import ExecuteWorkflowUseCase
+
         return ExecuteWorkflowUseCase(
             git=self.git_adapter,
             storage=self.storage_adapter,
@@ -257,6 +270,7 @@ class Container:
 
     def resolve_analyze_compatibility(self) -> AnalyzeCompatibilityUseCase:
         from kaos.application.use_cases import AnalyzeCompatibilityUseCase
+
         return AnalyzeCompatibilityUseCase(
             llm_provider=self.llm_adapter,
             storage=self.storage_adapter,
@@ -275,6 +289,7 @@ class Container:
 
     def resolve_scout_coordinator(self) -> ScoutCoordinator:
         from kaos.application.use_cases import ScoutCoordinator
+
         return ScoutCoordinator(
             llm_provider=self.llm_adapter,
             gatekeeper=self.gatekeeper_adapter,
@@ -286,6 +301,7 @@ class Container:
 
     def resolve_act_executor(self, target_path: str = "") -> ActExecutor:
         from kaos.application.use_cases import ActExecutor
+
         resolved_target = target_path or (str(TARGET_PATH) if TARGET_PATH else str(Path.cwd()))
         return ActExecutor(
             llm_provider=self.llm_adapter,
@@ -301,6 +317,7 @@ class Container:
 
     def resolve_git_auto_manager(self, target_path: str = "") -> GitAutoManager:
         from kaos.application.use_cases import GitAutoManager
+
         resolved_target = target_path or (str(TARGET_PATH) if TARGET_PATH else str(Path.cwd()))
         return GitAutoManager(
             git=self.git_adapter,
@@ -308,9 +325,10 @@ class Container:
             target_path=resolved_target,
         )
 
-    def resolve_scan_codebase(self) -> 'ScanCodebaseUseCase':
+    def resolve_scan_codebase(self) -> ScanCodebaseUseCase:
         """Resolve ScanCodebaseUseCase với scanner + repo đã được wire."""
         from kaos.application.use_cases.scan_codebase import ScanCodebaseUseCase
+
         return ScanCodebaseUseCase(
             scanner=self.scanner,
             repo=self.code_graph_repo,
@@ -336,9 +354,7 @@ class Container:
             # Thống kê từ Graph
             try:
                 stats = await self.knowledge_graph.get_graph_stats()
-                status_text += (
-                    f"• Graph Nodes: Tasks={stats['tasks']}, Conditions={stats['conditions']}, Results={stats['results']}\n"
-                )
+                status_text += f"• Graph Nodes: Tasks={stats['tasks']}, Conditions={stats['conditions']}, Results={stats['results']}\n"
             except Exception as e:
                 status_text += f"• Graph Error: {e}\n"
 
@@ -356,7 +372,7 @@ class Container:
                 await self.knowledge_graph.upsert_condition(
                     cond_id=f"cond_kill_{target_task}_{int(time.time())}",
                     type="feedback",
-                    content=f"FORCE_TERMINATED: Lệnh dừng từ Telegram.",
+                    content="FORCE_TERMINATED: Lệnh dừng từ Telegram.",
                 )
                 # Đánh dấu Task thất bại ngay lập tức để vòng lặp tiếp theo dừng
                 await self.telegram.send_message(f"🛑 Đã gửi lệnh tắt nóng task `{target_task}` lên Redis.")
@@ -395,13 +411,17 @@ class Container:
         async def cmd_resolve(chat_id: str, args: str):
             action = args.strip().lower()
             if action != "auto_fix":
-                await self.telegram.send_message("❓ Sử dụng: `/resolve auto_fix` để tự động giải quyết xung đột Git bằng LLM.")
+                await self.telegram.send_message(
+                    "❓ Sử dụng: `/resolve auto_fix` để tự động giải quyết xung đột Git bằng LLM."
+                )
                 return
 
             try:
                 conflict_files = await self.git_adapter.get_conflict_files()
                 if not conflict_files:
-                    await self.telegram.send_message("✅ *Git Resolve*: Workspace hiện không có xung đột (conflict) nào.")
+                    await self.telegram.send_message(
+                        "✅ *Git Resolve*: Workspace hiện không có xung đột (conflict) nào."
+                    )
                     return
 
                 await self.telegram.send_message(
@@ -412,8 +432,7 @@ class Container:
 
                 git_mgr = self.resolve_git_auto_manager(target_path=str(TARGET_PATH))
                 success, still_conflicted = await git_mgr.resolve_conflict_with_llm(
-                    conflict_files=conflict_files,
-                    llm_provider=self.llm_adapter
+                    conflict_files=conflict_files, llm_provider=self.llm_adapter
                 )
 
                 if success:
@@ -426,8 +445,8 @@ class Container:
                     )
                 else:
                     await self.telegram.send_message(
-                        f"❌ *Git Resolve*: Không thể giải quyết triệt để tất cả xung đột.\n"
-                        f"Các file còn bị conflict:\n"
+                        "❌ *Git Resolve*: Không thể giải quyết triệt để tất cả xung đột.\n"
+                        "Các file còn bị conflict:\n"
                         + "\n".join([f"• `{f}`" for f in still_conflicted])
                         + "\n\nVui lòng can thiệp thủ công hoặc kiểm tra logs."
                     )

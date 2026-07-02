@@ -1,11 +1,10 @@
-import time
 import json
-import re
+import time
 from pathlib import Path
-from typing import Optional, Any, Tuple
+
 from kaos.config import TARGET_PATH, TMP_DIR, logger
-from kaos.domain.value_objects import ExecutionConfig
 from kaos.domain.scout_results import ScoutReport
+
 
 class ExecutePipelineUseCase:
     """
@@ -13,6 +12,7 @@ class ExecutePipelineUseCase:
     or the automated Scout->Act pipeline.
     This separates orchestration business logic from the CLI presentation layer.
     """
+
     def __init__(self, container_factory):
         self.container_factory = container_factory
 
@@ -30,8 +30,10 @@ class ExecutePipelineUseCase:
                     spec_input = str(cwd_spec_path)
                 elif target_spec_path.exists():
                     spec_input = str(target_spec_path)
-                elif spec_input.endswith(('.md', '.txt', '.json')) or '/' in spec_input or '\\' in spec_input:
-                    logger.error(f"❌ File spec không tồn tại tại: {spec_input} (CWD: {Path.cwd()}, Target: {TARGET_PATH})")
+                elif spec_input.endswith((".md", ".txt", ".json")) or "/" in spec_input or "\\" in spec_input:
+                    logger.error(
+                        f"❌ File spec không tồn tại tại: {spec_input} (CWD: {Path.cwd()}, Target: {TARGET_PATH})"
+                    )
                     return 1
             elif not spec_path.exists():
                 logger.error(f"❌ File spec không tồn tại tại: {spec_input}")
@@ -61,9 +63,13 @@ class ExecutePipelineUseCase:
         # Auto dry-run/compatibility analysis trigger
         is_execution_mode = args.resume or args.rerun_failed or args.phase == "execute"
         if not is_execution_mode and not args.compatibility_report:
-            args.compatibility_report = str(Path.cwd() / "db_compatibility_report.md")
+            from kaos.config import KAOS_WORK_DIR
+
+            args.compatibility_report = str(KAOS_WORK_DIR / "db_compatibility_report.md")
             args.run_dry = True
-            logger.info(f"💡 [KAOS Orchestrator] Tự động kích hoạt chế độ Phân tích tương thích & Ra quyết định tối ưu (Dry-Run)")
+            logger.info(
+                "💡 [KAOS Orchestrator] Tự động kích hoạt chế độ Phân tích tương thích & Ra quyết định tối ưu (Dry-Run)"
+            )
             logger.info(f"   Báo cáo quyết định sẽ xuất ra: {args.compatibility_report}")
 
         # 1. Auto-detect module
@@ -74,7 +80,9 @@ class ExecutePipelineUseCase:
             try:
                 detected_scope = await detect_use_case.execute(spec=spec_input, raw_data=raw_data_path)
                 args.module = detected_scope.get("recommended_module", "all")
-                logger.info(f"🎯 [KAOS Scope Detector] Đã tự động nhận diện module đích: '{args.module}' (Confidence: {detected_scope.get('confidence_score')})")
+                logger.info(
+                    f"🎯 [KAOS Scope Detector] Đã tự động nhận diện module đích: '{args.module}' (Confidence: {detected_scope.get('confidence_score')})"
+                )
             except Exception as e:
                 logger.error(f"❌ Tự động nhận diện module thất bại: {e}. Sử dụng fallback module='all'.")
                 args.module = "all"
@@ -98,19 +106,22 @@ class ExecutePipelineUseCase:
 
         # 4. DB Compatibility Report (Dry Run)
         if args.compatibility_report or args.run_dry:
-            report_path = args.compatibility_report or "tools/kaos/tmp/db_compatibility_report.md"
-            report_path_obj = Path(report_path)
-            if not report_path_obj.is_absolute():
-                if args.compatibility_report:
-                    report_path = str((Path.cwd() / report_path_obj).resolve())
+            if args.compatibility_report:
+                report_path_obj = Path(args.compatibility_report)
+                if report_path_obj.is_absolute():
+                    report_path = str(report_path_obj.resolve())
                 else:
-                    report_path = str((TARGET_PATH / "tools" / "kaos" / "tmp" / "db_compatibility_report.md").resolve())
+                    report_path = str((Path.cwd() / report_path_obj).resolve())
             else:
-                report_path = str(report_path_obj.resolve())
+                from kaos.config import KAOS_WORK_DIR
+
+                report_path = str(KAOS_WORK_DIR / "db_compatibility_report.md")
             if not raw_data_path:
-                logger.error("❌ Phân tích độ tương thích database yêu cầu đầu vào raw_data (đường dẫn file Excel .xlsx).")
+                logger.error(
+                    "❌ Phân tích độ tương thích database yêu cầu đầu vào raw_data (đường dẫn file Excel .xlsx)."
+                )
                 return 1
-            
+
             resolved_raw_path = Path(raw_data_path).resolve()
             if not resolved_raw_path.exists():
                 logger.error(f"❌ File raw_data không tồn tại tại: {raw_data_path}")
@@ -119,10 +130,7 @@ class ExecutePipelineUseCase:
             comp_use_case = container.resolve_analyze_compatibility()
             try:
                 await comp_use_case.execute(
-                    raw_data=str(resolved_raw_path),
-                    spec=spec_input,
-                    report_path=report_path,
-                    run_dry=args.run_dry
+                    raw_data=str(resolved_raw_path), spec=spec_input, report_path=report_path, run_dry=args.run_dry
                 )
                 return 0
             except Exception as e:
@@ -150,10 +158,7 @@ class ExecutePipelineUseCase:
             analyze_use_case = container.resolve_analyze_requirements()
             try:
                 output_csv = await analyze_use_case.execute(
-                    target_module=args.module,
-                    output_csv=output_csv,
-                    raw_data=raw_data_path,
-                    spec=spec_input
+                    target_module=args.module, output_csv=output_csv, raw_data=raw_data_path, spec=spec_input
                 )
                 logger.info(f"✅ [Analyze Requirements] Đã tạo Task Queue CSV tại: {output_csv}")
                 if args.phase == "analyze":
@@ -167,9 +172,7 @@ class ExecutePipelineUseCase:
             execute_use_case = container.resolve_execute_workflow()
             try:
                 success = await execute_use_case.execute(
-                    csv_path=output_csv,
-                    resume=args.resume,
-                    rerun_failed=args.rerun_failed
+                    csv_path=output_csv, resume=args.resume, rerun_failed=args.rerun_failed
                 )
                 logger.info(f"\n⏱️ Tổng thời gian chạy pipeline: {time.time() - start_time:.2f}s")
                 return 0 if success else 1
@@ -189,13 +192,15 @@ class ExecutePipelineUseCase:
             if status_path.exists():
                 try:
                     data = json.loads(status_path.read_text())
-                    logger.info(f"\n📊 [KAOS Auto] Engine Status:")
+                    logger.info("\n📊 [KAOS Auto] Engine Status:")
                     logger.info(f"   Branch : {data.get('branch_name', 'N/A')}")
-                    logger.info(f"   Tasks  : {data.get('total', 0)} total, "
-                                f"{data.get('completed', 0)} completed, "
-                                f"{data.get('failed', 0)} failed")
+                    logger.info(
+                        f"   Tasks  : {data.get('total', 0)} total, "
+                        f"{data.get('completed', 0)} completed, "
+                        f"{data.get('failed', 0)} failed"
+                    )
                     for t in data.get("tasks", []):
-                        logger.info(f"   - [{t.get('status','?')}] {t.get('task_id','')} : {t.get('title','')[:60]}")
+                        logger.info(f"   - [{t.get('status', '?')}] {t.get('task_id', '')} : {t.get('title', '')[:60]}")
                 except Exception as e:
                     logger.error(f"❌ Cannot read engine status: {e}")
             else:
@@ -319,13 +324,13 @@ class ExecutePipelineUseCase:
         elapsed = time.time() - start_time
 
         logger.info(
-            f"\n{'='*50}\n"
+            f"\n{'=' * 50}\n"
             f"🏁 [KAOS Auto] Pipeline complete in {elapsed:.1f}s\n"
             f"   Tasks: {success_count}/{total_count} passed\n"
             f"   Module: {module}\n"
             f"   Compatibility: {report.compatibility_score}%\n"
             f"   Confidence: {report.confidence_level}\n"
-            f"{'='*50}"
+            f"{'=' * 50}"
         )
 
         for r in results:

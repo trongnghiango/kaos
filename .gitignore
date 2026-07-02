@@ -34,3 +34,9 @@ Thumbs.db
 
 # ── Claude ────────────────────────
 CLAUDE.md
+
+# ── Reports & Handoffs ─────────────
+db_compatibility_report.md
+*HANDOFF.md
+*PROMPT_BAN_GIAO.md
+

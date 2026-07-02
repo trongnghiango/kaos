@@ -5,12 +5,11 @@ Quản lý cấu hình động cho bất kỳ dự án Target nào dựa trên t
 """
 
 import json
-import os
-import uuid
-import time
 import logging
+import os
+import time
+import uuid
 from pathlib import Path
-from typing import Optional
 
 # ==========================================
 # TARGET PATH RESOLUTION
@@ -19,20 +18,48 @@ from typing import Optional
 TARGET_PATH_ENV = os.environ.get("KAOS_TARGET_PATH")
 TARGET_PATH = Path(TARGET_PATH_ENV).resolve() if TARGET_PATH_ENV else Path.cwd().resolve()
 
+# Custom work directory base.
+# Mặc định: ~/.kaos/{project_name}
+# Set KAOS_WORK_DIR=/path/to/project -> dùng thẳng /path/to/project/.kaos
+# Set KAOS_WORK_DIR=.kaos_in_project -> dùng {TARGET_PATH}/.kaos
+KAOS_WORK_DIR_ENV = os.environ.get("KAOS_WORK_DIR", "").strip()
+_KAOS_WORK_DIR_CUSTOM = None
+if KAOS_WORK_DIR_ENV:
+    if KAOS_WORK_DIR_ENV == ".kaos_in_project":
+        _KAOS_WORK_DIR_CUSTOM = TARGET_PATH / ".kaos"
+    else:
+        _KAOS_WORK_DIR_CUSTOM = Path(KAOS_WORK_DIR_ENV).resolve()
+
+# List các LLM Providers được hỗ trợ
+SUPPORTED_LLM_PROVIDERS = ["goose", "antigravity", "claude-code", "openai"]
+
+
+def get_compatibility_report_path(custom_path: str | None = None) -> Path:
+    """Trả về đường dẫn tuyệt đối cho file db_compatibility_report.md"""
+    if custom_path:
+        path = Path(custom_path).resolve()
+        if path.is_dir():
+            return path / "db_compatibility_report.md"
+        return path
+    return KAOS_WORK_DIR / "db_compatibility_report.md"
+
+
 # Gốc của kaos tool package
-KAOS_ROOT = Path(__file__).resolve().parent          # src/kaos/
-PROJECT_ROOT = KAOS_ROOT.parent.parent               # thư mục gốc dự án kaos
+KAOS_ROOT = Path(__file__).resolve().parent  # src/kaos/
+PROJECT_ROOT = KAOS_ROOT.parent.parent  # thư mục gốc dự án kaos
 TS_BRIDGE = KAOS_ROOT / "bridge" / "executor.ts"
+
 
 # ==========================================
 # SESSION & WORK DIRECTORIES
 # ==========================================
 def generate_session_id() -> str:
     """Tạo Session ID động, thread-safe"""
-    import uuid
     return f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
 
+
 SESSION_ID = generate_session_id()
+
 
 def get_tmp_dir(session_id: str) -> Path:
     """Lấy thư mục tạm động dựa trên Session ID trong thư mục home"""
@@ -41,10 +68,16 @@ def get_tmp_dir(session_id: str) -> Path:
     tmp_dir.mkdir(parents=True, exist_ok=True)
     return tmp_dir
 
+
 def _resolve_dirs(target_path: Path) -> tuple[Path, Path, Path, Path]:
     """Tính toán lại các thư mục làm việc dựa trên target_path hiện tại."""
     project_name = target_path.name or "default"
-    work_dir = Path.home() / ".kaos" / project_name
+
+    if _KAOS_WORK_DIR_CUSTOM:
+        work_dir = _KAOS_WORK_DIR_CUSTOM
+    else:
+        work_dir = Path.home() / ".kaos" / project_name
+
     tmp_dir = work_dir / "tmp" / SESSION_ID
     log_dir = work_dir / "logs"
     log_file = log_dir / f"pipeline_{SESSION_ID}.log"
@@ -57,15 +90,15 @@ def set_target_path(path: Path | str) -> None:
     Gọi hàm này trước khi dùng bất kỳ module KAOS nào khác để đảm bảo path chính xác.
     """
     global TARGET_PATH, KAOS_WORK_DIR, TMP_DIR, LOG_DIR, LOG_FILE, RUNNER_CONFIG_FILE
-    
+
     TARGET_PATH = Path(path).resolve()
     KAOS_WORK_DIR, TMP_DIR, LOG_DIR, LOG_FILE = _resolve_dirs(TARGET_PATH)
     RUNNER_CONFIG_FILE = KAOS_WORK_DIR / "runner_config.json"
-    
+
     # Tạo thư mục nếu chưa tồn tại
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    
+
     # Cập nhật logger file handler (nếu file handler đã được tạo)
     _update_logger_file()
 
@@ -98,6 +131,7 @@ LOG_DIR = KAOS_WORK_DIR / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / f"pipeline_{SESSION_ID}.log"
 
+
 def get_logger(name: str = LOGGER_NAME) -> logging.Logger:
     logger = logging.getLogger(name)
     if logger.handlers:
@@ -120,7 +154,9 @@ def get_logger(name: str = LOGGER_NAME) -> logging.Logger:
     logger.propagate = False
     return logger
 
+
 logger = get_logger(LOGGER_NAME)
+
 
 # ==========================================
 # CONFIG LOADER
@@ -128,11 +164,11 @@ logger = get_logger(LOGGER_NAME)
 def load_runner_config() -> dict:
     if RUNNER_CONFIG_FILE.exists():
         try:
-            with open(RUNNER_CONFIG_FILE, "r") as f:
+            with open(RUNNER_CONFIG_FILE) as f:
                 return json.load(f)
         except Exception as e:
             logger.warning(f"⚠️ [Config] Không thể đọc runner_config.json: {e}")
-    
+
         # Cấu hình mặc định nếu dự án target không có config riêng
     return {
         "execution": {
@@ -142,13 +178,11 @@ def load_runner_config() -> dict:
             "timeout_secs_coder": 300,
             "timeout_secs_planner": 180,
             "timeout_secs_analyzer": 300,
-            "timeout_secs_gatekeeper": 120
+            "timeout_secs_gatekeeper": 120,
         },
-        "paths": {
-            "node_path": "/usr/bin/node",
-            "tsx_cli_relative": "tsx"
-        }
+        "paths": {"node_path": "/usr/bin/node", "tsx_cli_relative": "tsx"},
     }
+
 
 CONFIG = load_runner_config()
 EXECUTION_CONF = CONFIG.get("execution", {})
@@ -158,7 +192,7 @@ PATHS_CONF = CONFIG.get("paths", {})
 # ==========================================
 # TSX PATH RESOLUTION
 # ==========================================
-def resolve_tsx_path(target_path: Optional[Path] = None) -> str:
+def resolve_tsx_path(target_path: Path | None = None) -> str:
     """Tìm tsx cli từ node_modules của dự án target."""
     target = target_path or TARGET_PATH
     candidates = [
@@ -172,12 +206,14 @@ def resolve_tsx_path(target_path: Optional[Path] = None) -> str:
         try:
             if c.exists() or str(c).endswith("tsx"):
                 import shutil
+
                 found = shutil.which("tsx")
                 if found:
                     return found
         except OSError:
             continue
     import shutil
+
     return shutil.which("tsx") or "tsx"
 
 
@@ -216,6 +252,7 @@ TIMEOUT_SECS_CODER = EXECUTION_CONF.get("timeout_secs_coder", 300)
 TIMEOUT_SECS_PLANNER = EXECUTION_CONF.get("timeout_secs_planner", 180)
 TIMEOUT_SECS_ANALYZER = EXECUTION_CONF.get("timeout_secs_analyzer", 300)
 TIMEOUT_SECS_GATEKEEPER = EXECUTION_CONF.get("timeout_secs_gatekeeper", 120)
+
 
 # Prompts
 class Prompts:
@@ -260,11 +297,11 @@ class Prompts:
         "Hãy ghi kế hoạch của bạn dưới dạng JSON có cấu trúc rõ ràng vào file: {plan_file_path}\n"
         "JSON format:\n"
         "{{\n"
-        "  \"complexity\": \"LOW|MEDIUM|HIGH\",\n"
-        "  \"files_to_modify\": [\"path/to/file1\", \"path/to/file2\"],\n"
-        "  \"files_to_create\": [\"path/to/newfile\"],\n"
-        "  \"impacted_references\": [\"path/to/reference/file\"],\n"
-        "  \"step_by_step_plan\": [\"Bước 1...\", \"Bước 2...\"]\n"
+        '  "complexity": "LOW|MEDIUM|HIGH",\n'
+        '  "files_to_modify": ["path/to/file1", "path/to/file2"],\n'
+        '  "files_to_create": ["path/to/newfile"],\n'
+        '  "impacted_references": ["path/to/reference/file"],\n'
+        '  "step_by_step_plan": ["Bước 1...", "Bước 2..."]\n'
         "}}"
     )
 
@@ -305,11 +342,11 @@ class Prompts:
         "Hãy phân tích và trả về KẾT QUẢ DƯỚI DẠNG JSON vào file: {output_file_path}.\n"
         "Định dạng JSON đầu ra:\n"
         "{{\n"
-        "  \"scope_type\": \"NEW_FEATURE\" | \"MODIFY\" | \"OPTIMIZE\",\n"
-        "  \"recommended_module\": \"tên_module_từ_danh_sách_hoặc_mới\",\n"
-        "  \"is_new_module\": true | false,\n"
-        "  \"confidence_score\": 0.0-1.0,\n"
-        "  \"reasoning\": \"Giải thích chi tiết lý do chọn module này, ưu tiên nhất quán với tên module có sẵn\"\n"
+        '  "scope_type": "NEW_FEATURE" | "MODIFY" | "OPTIMIZE",\n'
+        '  "recommended_module": "tên_module_từ_danh_sách_hoặc_mới",\n'
+        '  "is_new_module": true | false,\n'
+        '  "confidence_score": 0.0-1.0,\n'
+        '  "reasoning": "Giải thích chi tiết lý do chọn module này, ưu tiên nhất quán với tên module có sẵn"\n'
         "}}"
     )
 
@@ -344,37 +381,35 @@ class Prompts:
         "- Option B (Ví dụ: Thiết kế tối giản, sử dụng trường JSON mở rộng hoặc cấu trúc tạm thời để tránh sửa đổi schema lớn nhưng có thể vi phạm tính purity hoặc hiệu năng).\n\n"
         "JSON đầu ra PHẢI có cấu trúc như sau:\n"
         "{{\n"
-        "  \"options\": [\n"
+        '  "options": [\n'
         "    {{\n"
-        "      \"option_id\": \"OPTION_A\",\n"
-        "      \"title\": \"Tên phương án\",\n"
-        "      \"description\": \"Mô tả chi tiết phương án và cách tiếp cận\",\n"
-        "      \"changed_files\": [\"backend/src/database/schema/xyz.ts\", \"backend/src/modules/xyz/xyz.controller.ts\"],\n"
-        "      \"scores\": {{\n"
-        "        \"purity\": 95.0,\n"
-        "        \"correctness\": 90.0,\n"
-        "        \"multi_tenancy\": 100.0\n"
+        '      "option_id": "OPTION_A",\n'
+        '      "title": "Tên phương án",\n'
+        '      "description": "Mô tả chi tiết phương án và cách tiếp cận",\n'
+        '      "changed_files": ["backend/src/database/schema/xyz.ts", "backend/src/modules/xyz/xyz.controller.ts"],\n'
+        '      "scores": {{\n'
+        '        "purity": 95.0,\n'
+        '        "correctness": 90.0,\n'
+        '        "multi_tenancy": 100.0\n'
         "      }},\n"
-        "      \"analysis_details\": {{\n"
-        "        \"compatibility_score\": 90.0,\n"
-        "        \"risk_level\": \"LOW|MEDIUM|HIGH\",\n"
-        "        \"comparison_table\": \"Bảng so sánh cấu trúc chi tiết (dạng markdown)\",\n"
-        "        \"multi_tenancy_check\": \"Đánh giá tính cô lập đa doanh nghiệp\",\n"
-        "        \"impacted_apis\": \"Các API endpoints bị tác động\"\n"
+        '      "analysis_details": {{\n'
+        '        "compatibility_score": 90.0,\n'
+        '        "risk_level": "LOW|MEDIUM|HIGH",\n'
+        '        "comparison_table": "Bảng so sánh cấu trúc chi tiết (dạng markdown)",\n'
+        '        "multi_tenancy_check": "Đánh giá tính cô lập đa doanh nghiệp",\n'
+        '        "impacted_apis": "Các API endpoints bị tác động"\n'
         "      }},\n"
-        "      \"unified_diff\": \"Đoạn Unified Diff chi tiết chứa đề xuất sửa code Drizzle schema và API (sử dụng + và -)\"\n"
+        '      "unified_diff": "Đoạn Unified Diff chi tiết chứa đề xuất sửa code Drizzle schema và API (sử dụng + và -)"\n'
         "    }}\n"
         "  ]\n"
         "}}\n"
     )
 
-
     @staticmethod
-
     def format_tactical_plan(plan_data: dict) -> str:
         if not plan_data:
             return ""
-        steps = "\n".join([f"  * {step}" for step in plan_data.get('step_by_step_plan', [])])
+        steps = "\n".join([f"  * {step}" for step in plan_data.get("step_by_step_plan", [])])
         return (
             f"\n\n[KẾ HOẠCH TÁC CHIẾN KIẾN TRÚC - BẮT BUỘC TUÂN THỦ]:\n"
             f"- ĐỘ PHỨC TẠP: {plan_data.get('complexity', 'MEDIUM')}\n"

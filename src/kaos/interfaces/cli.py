@@ -16,12 +16,11 @@ from pathlib import Path
 def show_status(output_csv: Path, container):
     """In trạng thái hiện tại của Task Queue"""
     from kaos.config import logger
+
     if output_csv and output_csv.exists():
         logger.info(f"\n📊 [KAOS Status] Task Queue: {output_csv.name}")
         try:
-            tasks = container.storage_adapter.load_queue_tasks(
-                output_csv, container.target_module, resume=True
-            )
+            tasks = container.storage_adapter.load_queue_tasks(output_csv, container.target_module, resume=True)
             for tid, task in tasks.items():
                 logger.info(f"   - [{task.status}] {task.task_id}: {task.title}")
         except Exception as e:
@@ -30,7 +29,7 @@ def show_status(output_csv: Path, container):
         logger.warning("⚠️ Chưa có Task Queue CSV được tạo.")
 
 
-def resolve_inputs(args, target_path: Path) -> tuple[Optional[str], Optional[str]]:
+def resolve_inputs(args, target_path: Path) -> tuple[str | None, str | None]:
     """
     Resolve and route raw_data and spec inputs.
     If the positional argument raw_data points to a text spec file (.md, .txt, .markdown),
@@ -58,7 +57,7 @@ def resolve_inputs(args, target_path: Path) -> tuple[Optional[str], Optional[str
 
     # Route text spec files (.md, .txt, .markdown) to spec_input if spec is not specified
     if resolved_raw and resolved_raw.exists() and resolved_raw.is_file() and not spec_input:
-        if resolved_raw.suffix.lower() in ['.md', '.txt', '.markdown']:
+        if resolved_raw.suffix.lower() in [".md", ".txt", ".markdown"]:
             spec_input = str(resolved_raw)
             raw_input = None
             resolved_raw = None
@@ -97,7 +96,7 @@ async def run_pipeline(args) -> int:
     # Validate file existences if they are paths
     if spec_input:
         spec_path = Path(spec_input)
-        if spec_input.endswith(('.md', '.txt', '.json')) or '/' in spec_input or '\\' in spec_input:
+        if spec_input.endswith((".md", ".txt", ".json")) or "/" in spec_input or "\\" in spec_input:
             if not spec_path.exists():
                 logger.error(f"❌ File spec không tồn tại tại: {spec_input} (CWD: {Path.cwd()}, Target: {TARGET_PATH})")
                 return 1
@@ -116,9 +115,13 @@ async def run_pipeline(args) -> int:
     # Thì tự động chuyển sang chế độ Phân tích tương thích và Ra quyết định tối ưu (Dry-Run) xuất báo cáo ra thư mục hiện hành.
     is_execution_mode = args.resume or args.rerun_failed or args.phase == "execute"
     if not is_execution_mode and not args.compatibility_report:
-        args.compatibility_report = str(Path.cwd() / "db_compatibility_report.md")
+        from kaos.config import KAOS_WORK_DIR
+
+        args.compatibility_report = str(KAOS_WORK_DIR / "db_compatibility_report.md")
         args.run_dry = True
-        logger.info(f"💡 [KAOS Orchestrator] Tự động kích hoạt chế độ Phân tích tương thích & Ra quyết định tối ưu (Dry-Run)")
+        logger.info(
+            "💡 [KAOS Orchestrator] Tự động kích hoạt chế độ Phân tích tương thích & Ra quyết định tối ưu (Dry-Run)"
+        )
         logger.info(f"   Báo cáo quyết định sẽ xuất ra: {args.compatibility_report}")
 
     # 1. Tự động nhận diện module và scope nếu set --module auto
@@ -130,7 +133,9 @@ async def run_pipeline(args) -> int:
         try:
             detected_scope = await detect_use_case.execute(spec=spec_input, raw_data=raw_data_path)
             args.module = detected_scope.get("recommended_module", "all")
-            logger.info(f"🎯 [KAOS Scope Detector] Đã tự động nhận diện module đích: '{args.module}' (Confidence: {detected_scope.get('confidence_score')})")
+            logger.info(
+                f"🎯 [KAOS Scope Detector] Đã tự động nhận diện module đích: '{args.module}' (Confidence: {detected_scope.get('confidence_score')})"
+            )
         except Exception as e:
             logger.error(f"❌ Tự động nhận diện module thất bại: {e}. Sử dụng fallback module='all'.")
             args.module = "all"
@@ -155,20 +160,15 @@ async def run_pipeline(args) -> int:
 
     # 4.5. Phân tích độ tương thích database cũ và sinh báo cáo (Dry-Run)
     if args.compatibility_report or args.run_dry:
-        report_path = args.compatibility_report or "tools/kaos/tmp/db_compatibility_report.md"
-        report_path_obj = Path(report_path)
-        if not report_path_obj.is_absolute():
-            if args.compatibility_report:
-                report_path = str((Path.cwd() / report_path_obj).resolve())
-            else:
-                from kaos.config import TARGET_PATH
-                report_path = str((TARGET_PATH / "tools" / "kaos" / "tmp" / "db_compatibility_report.md").resolve())
-        else:
-            report_path = str(report_path_obj.resolve())
+        from kaos.config import get_compatibility_report_path
+
+        report_path = str(get_compatibility_report_path(args.compatibility_report))
         if not raw_data_path and not spec_input:
-            logger.error("❌ Phân tích độ tương thích database yêu cầu đầu vào raw_data (đường dẫn file Excel .xlsx) hoặc spec (đặc tả nghiệp vụ).")
+            logger.error(
+                "❌ Phân tích độ tương thích database yêu cầu đầu vào raw_data (đường dẫn file Excel .xlsx) hoặc spec (đặc tả nghiệp vụ)."
+            )
             return 1
-        
+
         # Validate raw_data path exists if provided
         resolved_raw_path = None
         if raw_data_path:
@@ -183,17 +183,14 @@ async def run_pipeline(args) -> int:
                 raw_data=str(resolved_raw_path) if resolved_raw_path else None,
                 spec=spec_input,
                 report_path=report_path,
-                run_dry=args.run_dry
+                run_dry=args.run_dry,
             )
             return 0
         except Exception as e:
             logger.error(f"❌ Phân tích độ tương thích thất bại: {e}")
             return 1
 
-
-
     if args.phase == "execute" and not output_csv.exists():
-
         logger.info("⚠️ Không thấy file CSV đã phân tích trước đó, tự động chuyển về phase 'all'.")
         args.phase = "all"
 
@@ -214,10 +211,7 @@ async def run_pipeline(args) -> int:
         analyze_use_case = container.resolve_analyze_requirements()
         try:
             output_csv = await analyze_use_case.execute(
-                target_module=args.module,
-                output_csv=output_csv,
-                raw_data=raw_data_path,
-                spec=spec_input
+                target_module=args.module, output_csv=output_csv, raw_data=raw_data_path, spec=spec_input
             )
             logger.info(f"✅ [Analyze Requirements] Đã tạo Task Queue CSV tại: {output_csv}")
             if args.phase == "analyze":
@@ -231,9 +225,7 @@ async def run_pipeline(args) -> int:
         execute_use_case = container.resolve_execute_workflow()
         try:
             success = await execute_use_case.execute(
-                csv_path=output_csv,
-                resume=args.resume,
-                rerun_failed=args.rerun_failed
+                csv_path=output_csv, resume=args.resume, rerun_failed=args.rerun_failed
             )
             logger.info(f"\n⏱️ Tổng thời gian chạy pipeline: {time.time() - start_time:.2f}s")
             return 0 if success else 1
@@ -256,9 +248,9 @@ async def run_auto_pipeline(args) -> int:
       --parallel N         max parallel workers (passed to engine)
     """
     import time
+
     from kaos.config import TARGET_PATH, TMP_DIR, logger
     from kaos.infrastructure.di import Container
-    from kaos.engine.task_queue_engine import TaskQueueEngine
 
     start_time = time.time()
     logger.info("🤖 [KAOS Auto] Scout→Act Pipeline started")
@@ -268,15 +260,18 @@ async def run_auto_pipeline(args) -> int:
         status_path = TMP_DIR / "engine_status.json"
         if status_path.exists():
             import json
+
             try:
                 data = json.loads(status_path.read_text())
-                logger.info(f"\n📊 [KAOS Auto] Engine Status:")
+                logger.info("\n📊 [KAOS Auto] Engine Status:")
                 logger.info(f"   Branch : {data.get('branch_name', 'N/A')}")
-                logger.info(f"   Tasks  : {data.get('total', 0)} total, "
-                            f"{data.get('completed', 0)} completed, "
-                            f"{data.get('failed', 0)} failed")
+                logger.info(
+                    f"   Tasks  : {data.get('total', 0)} total, "
+                    f"{data.get('completed', 0)} completed, "
+                    f"{data.get('failed', 0)} failed"
+                )
                 for t in data.get("tasks", []):
-                    logger.info(f"   - [{t.get('status','?')}] {t.get('task_id','')}: {t.get('title','')[:60]}")
+                    logger.info(f"   - [{t.get('status', '?')}] {t.get('task_id', '')}: {t.get('title', '')[:60]}")
             except Exception as e:
                 logger.error(f"❌ Cannot read engine status: {e}")
         else:
@@ -289,6 +284,7 @@ async def run_auto_pipeline(args) -> int:
 
     # Force set config target path to ensure correct global TMP_DIR, logs etc.
     from kaos.config import set_target_path
+
     set_target_path(target_path)
     # Re-import TMP_DIR to get the target project specific temp directory
     from kaos.config import TMP_DIR
@@ -358,10 +354,12 @@ async def run_auto_pipeline(args) -> int:
 
         # Cache the report to KAOS_WORK_DIR/scout_report.json
         from kaos.config import KAOS_WORK_DIR
+
         cached_report_path = KAOS_WORK_DIR / "scout_report.json"
         try:
-            import json
             import dataclasses
+            import json
+
             report_dict = report.to_dict() if hasattr(report, "to_dict") else dataclasses.asdict(report)
             cached_report_path.write_text(json.dumps(report_dict, indent=2, ensure_ascii=False), encoding="utf-8")
             logger.info(f"   💾 Cached ScoutReport to {cached_report_path}")
@@ -375,34 +373,40 @@ async def run_auto_pipeline(args) -> int:
             return 0
     else:
         # --phase act: load cached ScoutReport from file
-        from kaos.domain.scout_results import ScoutReport, ConflictPoint, ConflictType, ConflictSeverity
         from kaos.config import KAOS_WORK_DIR
+        from kaos.domain.scout_results import ConflictPoint, ConflictSeverity, ConflictType, ScoutReport
+
         cached_report_path = KAOS_WORK_DIR / "scout_report.json"
         if cached_report_path.exists():
             import json
+
             try:
                 data = json.loads(cached_report_path.read_text())
-                
+
                 # Deserialise conflict_points dict to ConflictPoint objects
                 cps = []
                 for cp_dict in data.get("conflict_points", []):
-                    cps.append(ConflictPoint(
-                        conflict_type=ConflictType(cp_dict["conflict_type"]),
-                        severity=ConflictSeverity(cp_dict["severity"]),
-                        description=cp_dict["description"],
-                        suggestion=cp_dict.get("suggestion", ""),
-                        location=cp_dict.get("location", ""),
-                        source=cp_dict.get("source", "raw_data")
-                    ))
+                    cps.append(
+                        ConflictPoint(
+                            conflict_type=ConflictType(cp_dict["conflict_type"]),
+                            severity=ConflictSeverity(cp_dict["severity"]),
+                            description=cp_dict["description"],
+                            suggestion=cp_dict.get("suggestion", ""),
+                            location=cp_dict.get("location", ""),
+                            source=cp_dict.get("source", "raw_data"),
+                        )
+                    )
                 data["conflict_points"] = cps
-                
+
                 report = ScoutReport(**data)
                 logger.info(f"   ✅ Loaded cached ScoutReport from {cached_report_path}")
             except Exception as e:
                 logger.error(f"❌ Cannot load cached ScoutReport: {e}. Run scout first.")
                 return 1
         else:
-            logger.error(f"❌ No cached ScoutReport found: {cached_report_path}. Run `kaos --auto --phase scout` first.")
+            logger.error(
+                f"❌ No cached ScoutReport found: {cached_report_path}. Run `kaos --auto --phase scout` first."
+            )
             return 1
 
     # 7. Act Phase
@@ -432,13 +436,13 @@ async def run_auto_pipeline(args) -> int:
     elapsed = time.time() - start_time
 
     logger.info(
-        f"\n{'='*50}\n"
+        f"\n{'=' * 50}\n"
         f"🏁 [KAOS Auto] Pipeline complete in {elapsed:.1f}s\n"
         f"   Tasks: {success_count}/{total_count} passed\n"
         f"   Module: {module}\n"
         f"   Compatibility: {report.compatibility_score}%\n"
         f"   Confidence: {report.confidence_level}\n"
-        f"{'='*50}"
+        f"{'=' * 50}"
     )
 
     for r in results:
@@ -469,7 +473,7 @@ async def run_auto_pipeline(args) -> int:
 
 async def run_scan(args) -> int:
     """Execute `kaos scan` — build knowledge graph from codebase."""
-    from kaos.config import logger, set_target_path, SCAN_CONFIG
+    from kaos.config import logger, set_target_path
 
     target_path_obj = Path(args.target_path).resolve()
     if not target_path_obj.exists():
@@ -479,14 +483,18 @@ async def run_scan(args) -> int:
     # Set target path to enable config resolution
     set_target_path(target_path_obj)
 
-    # Create scan container
+    # Create scan container (pass llm_provider nếu được chỉ định)
     from kaos.infrastructure.di import create_scan_container
-    container = create_scan_container(target_path_obj)
+
+    container = create_scan_container(
+        target_path_obj,
+        llm_provider_name=getattr(args, "llm_provider", None),
+    )
     use_case = container.resolve_scan_codebase()
 
     files_list = args.files.split(",") if args.files else None
 
-    logger.info(f"🔍 KAOS Codebase Scanner")
+    logger.info("🔍 KAOS Codebase Scanner")
     logger.info(f"   Target: {target_path_obj}")
     logger.info(f"   Structural only: {args.structural_only}")
     logger.info(f"   Incremental: {args.incremental}")
@@ -529,16 +537,17 @@ def main():
         os.environ["KAOS_TARGET_PATH"] = str(Path(target_path).resolve())
         # Force re-initialization of configuration paths based on target path
         from kaos.config import set_target_path
+
         set_target_path(target_path)
 
     # Bây giờ mới import config và logger an toàn
-    from kaos.config import logger
+    from kaos.config import SUPPORTED_LLM_PROVIDERS
 
     parser = argparse.ArgumentParser(description="KAOS Clean Architecture Standalone Orchestrator")
     parser.add_argument("raw_data", nargs="?", help="Đường dẫn đến file Excel/CSV/TSV/Document (.md,.txt) thô")
     parser.add_argument(
         "--spec",
-        help="Chuỗi Spec trực tiếp (dùng thay raw_data khi không có file). Ví dụ: --spec \"Tạo API CRUD cho CRM Contact\"",
+        help='Chuỗi Spec trực tiếp (dùng thay raw_data khi không có file). Ví dụ: --spec "Tạo API CRUD cho CRM Contact"',
     )
     parser.add_argument(
         "--module",
@@ -592,7 +601,7 @@ def main():
     parser.add_argument(
         "--llm-provider",
         dest="llm_provider",
-        choices=["goose", "antigravity", "claude-code"],
+        choices=SUPPORTED_LLM_PROVIDERS,
         default=None,
         help=(
             "LLM provider được dùng để thực thi task. Mặc định đọc từ KAOS_LLM_PROVIDER env "
@@ -615,7 +624,6 @@ def main():
         action="store_true",
         help="Force chạy Act Phase kể cả khi compatibility score thấp",
     )
-
 
     # ── Subcommand "scan" ─────────────────────────────────────────────
     if len(sys.argv) > 1 and sys.argv[1] == "scan":
@@ -640,6 +648,13 @@ def main():
         scan_parser.add_argument(
             "--files",
             help="Comma-separated specific files to scan",
+        )
+        scan_parser.add_argument(
+            "--llm-provider",
+            dest="llm_provider",
+            choices=SUPPORTED_LLM_PROVIDERS,
+            default=None,
+            help="LLM provider cho enrichment tasks (mặc định đọc từ config)",
         )
 
         scan_args = scan_parser.parse_args()

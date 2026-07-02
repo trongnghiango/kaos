@@ -7,12 +7,11 @@ Phân tích độ tương thích giữa database legacy (.xlsx) + spec yêu cầ
 import json
 import logging
 from pathlib import Path
-from typing import List, Optional
 
-from kaos.domain.models import ProposalOption, DecisionEngine, DecisionRule
-from kaos.domain.value_objects import ExecutionConfig, AgentInstruction
-from kaos.application.ports import StoragePort, GatekeeperPort, LLMProviderPort
-from kaos.config import Prompts, TMP_DIR, PROJECT_ROOT
+from kaos.application.ports import GatekeeperPort, LLMProviderPort, StoragePort
+from kaos.config import KAOS_WORK_DIR, TMP_DIR, Prompts
+from kaos.domain.models import DecisionEngine, DecisionRule, ProposalOption
+from kaos.domain.value_objects import AgentInstruction, ExecutionConfig
 
 logger = logging.getLogger("STAX_Harness")
 
@@ -26,7 +25,7 @@ class AnalyzeCompatibilityUseCase:
         storage: StoragePort,
         gatekeeper: GatekeeperPort,
         config: ExecutionConfig,
-        tmp_dir: Optional[Path] = None,
+        tmp_dir: Path | None = None,
     ):
         self.llm_provider = llm_provider
         self.storage = storage
@@ -36,24 +35,35 @@ class AnalyzeCompatibilityUseCase:
 
         # Thiết lập DecisionEngine cho kiến trúc & multi-tenancy của STAX
         rules = [
-            DecisionRule(principle="purity", weight=1.5, description="Tuân thủ ranh giới Clean Architecture (Domain - Application - Infrastructure)"),
-            DecisionRule(principle="multi_tenancy", weight=2.0, description="Cô lập dữ liệu doanh nghiệp an toàn (organization_id)"),
-            DecisionRule(principle="correctness", weight=1.0, description="Độ chính xác của kiểu dữ liệu và biên dịch code TypeScript"),
+            DecisionRule(
+                principle="purity",
+                weight=1.5,
+                description="Tuân thủ ranh giới Clean Architecture (Domain - Application - Infrastructure)",
+            ),
+            DecisionRule(
+                principle="multi_tenancy",
+                weight=2.0,
+                description="Cô lập dữ liệu doanh nghiệp an toàn (organization_id)",
+            ),
+            DecisionRule(
+                principle="correctness",
+                weight=1.0,
+                description="Độ chính xác của kiểu dữ liệu và biên dịch code TypeScript",
+            ),
         ]
         # Thresholds ra quyết định:
         # Tự tin >= 85%: AUTO_EXECUTE (Đề xuất tự động áp dụng)
         # Tự tin >= 70%: ASK_USER (Hỏi ý kiến nhà phát triển)
         # Tự tin < 70%: BLOCK (Yêu cầu làm lại thủ công)
         self.decision_engine = DecisionEngine(
-            rules=rules,
-            authority_thresholds={"auto_execute": 0.85, "ask_user": 0.70}
+            rules=rules, authority_thresholds={"auto_execute": 0.85, "ask_user": 0.70}
         )
 
     async def execute(
         self,
-        raw_data: Optional[str],
-        spec: Optional[str] = None,
-        report_path: Optional[str] = None,
+        raw_data: str | None,
+        spec: str | None = None,
+        report_path: str | None = None,
         run_dry: bool = False,
     ) -> Path:
         logger.info("\n📊 [KAOS] Bắt đầu phân tích độ tương thích database cũ và yêu cầu...")
@@ -69,7 +79,7 @@ class AnalyzeCompatibilityUseCase:
             spec_path = Path(spec)
             if spec_path.exists():
                 try:
-                    spec_content = spec_path.read_text(encoding='utf-8')
+                    spec_content = spec_path.read_text(encoding="utf-8")
                 except Exception as e:
                     logger.error(f"❌ Không thể đọc file spec: {e}")
                     spec_content = spec
@@ -80,7 +90,7 @@ class AnalyzeCompatibilityUseCase:
 
         # 3. Đường dẫn report mặc định nếu không truyền
         if not report_path:
-            report_path = str(self.tmp_dir / "db_compatibility_report.md")
+            report_path = str(KAOS_WORK_DIR / "db_compatibility_report.md")
 
         report_file = Path(report_path)
         report_file.parent.mkdir(parents=True, exist_ok=True)
@@ -89,12 +99,16 @@ class AnalyzeCompatibilityUseCase:
             output_json.unlink()
 
         # 4. Tạo hướng dẫn cho Analyzer LLM
-        raw_data_str = str(Path(raw_data).resolve()) if raw_data else "Không cung cấp file database legacy (Chỉ phân tích nghiệp vụ spec)."
+        raw_data_str = (
+            str(Path(raw_data).resolve())
+            if raw_data
+            else "Không cung cấp file database legacy (Chỉ phân tích nghiệp vụ spec)."
+        )
         instruction = Prompts.COMPATIBILITY_ANALYZER.format(
             raw_data_path=raw_data_str,
             spec_content=spec_content,
             schema_path=str(schema_file.resolve()),
-            output_json_path=str(output_json.resolve())
+            output_json_path=str(output_json.resolve()),
         )
 
         if run_dry:
@@ -105,9 +119,7 @@ class AnalyzeCompatibilityUseCase:
 
         logger.info(f"🦆 [KAOS] Đang gọi Analyzer LLM để sinh các Proposal Options tại: {output_json.name}...")
         agent_instruction = AgentInstruction.from_raw(
-            instruction,
-            timeout=float(self.config.timeout_secs_analyzer),
-            max_turns=15
+            instruction, timeout=float(self.config.timeout_secs_analyzer), max_turns=15
         )
         exit_code, out_logs = await self.llm_provider.run_agent(agent_instruction)
 
@@ -119,7 +131,7 @@ class AnalyzeCompatibilityUseCase:
 
         # 5. Đọc và Parse kết quả JSON thành Domain Model ProposalOption
         try:
-            result_data = json.loads(output_json.read_text(encoding='utf-8'))
+            result_data = json.loads(output_json.read_text(encoding="utf-8"))
             raw_options = result_data.get("options", [])
             if not raw_options:
                 raise ValueError("Không tìm thấy Proposal Options nào trong kết quả JSON.")
@@ -127,7 +139,7 @@ class AnalyzeCompatibilityUseCase:
             logger.error(f"❌ Lỗi parse kết quả JSON từ LLM: {e}")
             raise RuntimeError(f"Không thể đọc danh sách Proposal Options: {e}")
 
-        options: List[ProposalOption] = []
+        options: list[ProposalOption] = []
         for opt in raw_options:
             scores = opt.get("scores", {})
             # Ép kiểu điểm số thành float
@@ -141,7 +153,7 @@ class AnalyzeCompatibilityUseCase:
                 title=opt.get("title", "Không tên"),
                 description=opt.get("description", ""),
                 changed_files=opt.get("changed_files", []),
-                scores=typed_scores
+                scores=typed_scores,
             )
             # Gắn thêm dữ liệu metadata cho báo cáo
             proposal.analysis_details = opt.get("analysis_details", {})
@@ -164,22 +176,24 @@ class AnalyzeCompatibilityUseCase:
             best_option=best_option,
             confidence=confidence,
             action=action,
-            raw_data_path=raw_data if raw_data else "Không cung cấp file database legacy (Chỉ phân tích nghiệp vụ spec).",
-            spec_content=spec_content
+            raw_data_path=raw_data
+            if raw_data
+            else "Không cung cấp file database legacy (Chỉ phân tích nghiệp vụ spec).",
+            spec_content=spec_content,
         )
 
-        report_file.write_text(report_md, encoding='utf-8')
+        report_file.write_text(report_md, encoding="utf-8")
         logger.info(f"✅ Báo cáo phân tích quyết định tối ưu đã được xuất ra: {report_file.resolve()}")
         return report_file
 
     def _build_compatibility_report_markdown(
         self,
-        options: List[ProposalOption],
+        options: list[ProposalOption],
         best_option: ProposalOption,
         confidence: float,
         action: str,
         raw_data_path: str,
-        spec_content: str
+        spec_content: str,
     ) -> str:
         """Sinh tài liệu Markdown tổng hợp báo cáo và so sánh quyết định"""
 
@@ -202,7 +216,7 @@ class AnalyzeCompatibilityUseCase:
         action_badge = {
             "AUTO_EXECUTE": "🟢 [AUTO_EXECUTE] Khuyến nghị tự động áp dụng",
             "ASK_USER": "🟡 [ASK_USER] Cần lập trình viên xác nhận",
-            "BLOCK": "🔴 [BLOCK] Yêu cầu chỉnh sửa lại do rủi ro cao"
+            "BLOCK": "🔴 [BLOCK] Yêu cầu chỉnh sửa lại do rủi ro cao",
         }.get(action, f"⚠️ {action}")
 
         details = best_option.analysis_details
@@ -228,19 +242,19 @@ class AnalyzeCompatibilityUseCase:
 
 ### 🏆 Phương án tối ưu được chọn: **{best_option.option_id} — {best_option.title}**
 *   **Lý do chọn:** {best_option.description}
-*   **Đánh giá Multi-tenancy:** {details.get('multi_tenancy_check', 'Chưa có thông tin')}
+*   **Đánh giá Multi-tenancy:** {details.get("multi_tenancy_check", "Chưa có thông tin")}
 
 ---
 
 ## 📊 2. So sánh chi tiết cấu trúc bảng (Legacy vs Current Schema)
 
-{details.get('comparison_table', 'Không có thông tin chi tiết cấu trúc.')}
+{details.get("comparison_table", "Không có thông tin chi tiết cấu trúc.")}
 
 ---
 
 ## 📡 3. Đánh giá tác động API & Nghiệp vụ
 
-*   **API ảnh hưởng / Cần bổ sung:** {details.get('impacted_apis', 'Chưa có thông tin')}
+*   **API ảnh hưởng / Cần bổ sung:** {details.get("impacted_apis", "Chưa có thông tin")}
 *   **Phạm vi Module:** Tự động định tuyến cập nhật mã nguồn theo chuẩn Clean Architecture.
 
 ---

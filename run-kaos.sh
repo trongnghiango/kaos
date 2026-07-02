@@ -24,11 +24,15 @@ fi
 # Khởi chạy KAOS CLI với toàn bộ tham số truyền vào
 python3 "$SCRIPT_DIR/src/kaos/interfaces/cli.py" "$@"
 
-# In kết quả báo cáo nếu tồn tại ở thư mục hiện hành
-if [ -f "db_compatibility_report.md" ]; then
+# In kết quả báo cáo từ đúng thư mục làm việc của KAOS (KAOS_WORK_DIR)
+# Mặc định: ~/.kaos/{project_name}/
+# Có thể custom qua env KAOS_WORK_DIR
+WORK_DIR="${KAOS_WORK_DIR:-$HOME/.kaos/$(basename "$KAOS_TARGET_PATH")}"
+REPORT_PATH="$WORK_DIR/db_compatibility_report.md"
+if [ -f "$REPORT_PATH" ]; then
     echo ""
     echo "=============================================================================="
     echo "🎉 KAOS Decision Engine đã tạo báo cáo quyết định tối ưu!"
-    echo "📍 Đường dẫn báo cáo: $(pwd)/db_compatibility_report.md"
+    echo "📍 Đường dẫn báo cáo: $REPORT_PATH"
     echo "=============================================================================="
 fi

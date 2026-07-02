@@ -8,12 +8,11 @@ import csv
 import io
 import logging
 from pathlib import Path
-from typing import List, Optional, Tuple
 
+from kaos.application.ports import GatekeeperPort, LLMProviderPort, StoragePort
+from kaos.config import KAOS_WORK_DIR, TMP_DIR, Prompts
 from kaos.domain.models import Task, Workflow
 from kaos.domain.value_objects import AgentInstruction
-from kaos.application.ports import StoragePort, GatekeeperPort, LLMProviderPort
-from kaos.config import Prompts, TMP_DIR, PROJECT_ROOT, TARGET_PATH as REPO_ROOT
 
 logger = logging.getLogger("STAX_Harness")
 
@@ -27,7 +26,7 @@ class AnalyzeRequirementsUseCase:
         storage: StoragePort,
         gatekeeper: GatekeeperPort,
         config,
-        tmp_dir: Optional[Path] = None,
+        tmp_dir: Path | None = None,
     ):
         self.llm_provider = llm_provider
         self.storage = storage
@@ -36,11 +35,7 @@ class AnalyzeRequirementsUseCase:
         self.tmp_dir = tmp_dir or TMP_DIR
 
     async def execute(
-        self,
-        target_module: str,
-        output_csv: Path,
-        raw_data: Optional[str] = None,
-        spec: Optional[str] = None
+        self, target_module: str, output_csv: Path, raw_data: str | None = None, spec: str | None = None
     ) -> Path:
         """
         Phân tích yêu cầu đầu vào (spec + raw_data) và sinh danh sách Task Queue CSV.
@@ -57,20 +52,14 @@ class AnalyzeRequirementsUseCase:
         ctx_data = {
             "target_module": target_module,
             "current_schema": schema,
-            "raw_data": {
-                "type": "none",
-                "path": ""
-            },
-            "spec": {
-                "type": "none",
-                "content": ""
-            }
+            "raw_data": {"type": "none", "path": ""},
+            "spec": {"type": "none", "content": ""},
         }
 
         # Xử lý Raw Data
         if raw_data:
             raw_path = Path(raw_data)
-            if raw_path.exists() and raw_path.suffix.lower() in ('.xlsx', '.xls', '.csv', '.tsv'):
+            if raw_path.exists() and raw_path.suffix.lower() in (".xlsx", ".xls", ".csv", ".tsv"):
                 ctx_data["raw_data"]["type"] = "file_excel"
                 ctx_data["raw_data"]["path"] = str(raw_path.resolve())
             else:
@@ -83,7 +72,7 @@ class AnalyzeRequirementsUseCase:
                 # Spec là một file (.md, .txt...)
                 try:
                     ctx_data["spec"]["type"] = "file_document"
-                    ctx_data["spec"]["content"] = spec_path.read_text(encoding='utf-8')
+                    ctx_data["spec"]["content"] = spec_path.read_text(encoding="utf-8")
                 except Exception as e:
                     logger.error(f"❌ Không thể đọc file spec: {e}")
                     ctx_data["spec"]["type"] = "direct_text"
@@ -99,13 +88,15 @@ class AnalyzeRequirementsUseCase:
             ctx_data["spec"]["content"] = "Analyze and generate tasks based on raw_data file."
 
         # Tự động phát hiện và đính kèm báo cáo tương thích có sẵn (nếu có) để tận dụng kết quả dry-run
-        compatibility_report = REPO_ROOT / "tools/kaos/tmp/db_compatibility_report.md"
+        compatibility_report = KAOS_WORK_DIR / "db_compatibility_report.md"
         if compatibility_report.exists():
             try:
-                comp_content = compatibility_report.read_text(encoding='utf-8')
+                comp_content = compatibility_report.read_text(encoding="utf-8")
                 logger.info("ℹ️ Tìm thấy báo cáo tương thích có sẵn. Đang đính kèm vào context spec...")
                 if ctx_data["spec"]["content"]:
-                    ctx_data["spec"]["content"] += "\n\n=== HƯỚNG DẪN CHI TIẾT TỪ BÁO CÁO TƯƠNG THÍCH DATABASE ===\n" + comp_content
+                    ctx_data["spec"]["content"] += (
+                        "\n\n=== HƯỚNG DẪN CHI TIẾT TỪ BÁO CÁO TƯƠNG THÍCH DATABASE ===\n" + comp_content
+                    )
                 else:
                     ctx_data["spec"]["content"] = comp_content
             except Exception as e:
@@ -122,8 +113,7 @@ class AnalyzeRequirementsUseCase:
         while attempts < max_retries and not success:
             attempts += 1
             instruction = Prompts.DATA_ANALYZER.format(
-                ctx_file_path=ctx_file.resolve(),
-                output_csv_path=output_csv.resolve()
+                ctx_file_path=ctx_file.resolve(), output_csv_path=output_csv.resolve()
             )
 
             if feedback_msg:
@@ -133,7 +123,9 @@ class AnalyzeRequirementsUseCase:
                 instruction += f"\n\n⚠️ LƯU Ý QUAN TRỌNG: Hãy sửa cột 'depends_on' theo thông báo lỗi:\n{feedback_msg}"
 
             logger.info(f"🦆 [KAOS] Đang gọi Analyzer LLM (Attempt {attempts}/{max_retries})...")
-            exit_code, out_logs = await self.llm_provider.run_agent(AgentInstruction.from_raw(instruction, timeout=float(self.config.timeout_secs_analyzer)))
+            exit_code, out_logs = await self.llm_provider.run_agent(
+                AgentInstruction.from_raw(instruction, timeout=float(self.config.timeout_secs_analyzer))
+            )
 
             if exit_code != 0:
                 feedback_msg = f"Goose CLI runtime error: {out_logs[:300]}"
@@ -152,14 +144,12 @@ class AnalyzeRequirementsUseCase:
                 feedback_msg = cycle_err
 
         if not success:
-            raise RuntimeError(
-                f"Data Analyzer thất bại sau {max_retries} lần thử. Lỗi cuối: {feedback_msg}"
-            )
+            raise RuntimeError(f"Data Analyzer thất bại sau {max_retries} lần thử. Lỗi cuối: {feedback_msg}")
 
         logger.info(f"   ✅ Đã sinh Task Queue thành công tại: {output_csv.name}")
         return output_csv
 
-    def _validate_csv_dependencies(self, csv_path: Path) -> Tuple[bool, str]:
+    def _validate_csv_dependencies(self, csv_path: Path) -> tuple[bool, str]:
         """Tái sử dụng class Workflow ở Domain layer để kiểm tra vòng lặp trên file CSV"""
         tasks_dict = {}
         try:
@@ -176,7 +166,7 @@ class AnalyzeRequirementsUseCase:
                     module="all",
                     title=row.get("title", ""),
                     description=row.get("description", ""),
-                    depends_on=dep_list
+                    depends_on=dep_list,
                 )
         except Exception as e:
             return True, f"Không thể đọc hoặc parse file CSV: {e}"

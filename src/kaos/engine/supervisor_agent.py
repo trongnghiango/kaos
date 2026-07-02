@@ -6,13 +6,13 @@ Runs as a background daemon thread to monitor AI Agent pipelines.
 When it detects a stuck agent (retry loop or API timeout), it intervenes:
 kill the process and write an intervention report.
 """
-import os
-import time
+
 import glob
 import json
+import os
 import subprocess
-import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -21,8 +21,8 @@ from kaos.config import TMP_DIR, logger
 REPORT_FILE = TMP_DIR / "supervisor_report.md"
 
 # Monitoring config
-STUCK_THRESHOLD_CYCLES = 30   # 5 minutes (30 × 10s) without new log output
-ATTEMPT_LIMIT = 3             # Max retry attempts before considering it cyclic
+STUCK_THRESHOLD_CYCLES = 30  # 5 minutes (30 × 10s) without new log output
+ATTEMPT_LIMIT = 3  # Max retry attempts before considering it cyclic
 CHECK_INTERVAL_SECS = 10
 PIPELINE_LOG = "/tmp/pipeline.log"
 
@@ -33,9 +33,10 @@ def get_pids() -> list[str]:
     try:
         output = subprocess.check_output(
             "ps -ef | grep -E 'smart_orchestrator\\.py|goose run' | grep -v grep",
-            shell=True, text=True,
+            shell=True,
+            text=True,
         )
-        for line in output.strip().split('\n'):
+        for line in output.strip().split("\n"):
             if line:
                 parts = line.split()
                 if len(parts) > 1:
@@ -56,7 +57,7 @@ def write_report(reason: str, pids: list[str], task_id: str = "UNKNOWN") -> None
     """Write an intervention report markdown file."""
     report_path = Path(REPORT_FILE)
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(report_path, 'w', encoding="utf-8") as rf:
+    with open(report_path, "w", encoding="utf-8") as rf:
         rf.write("# 🚨 SUPERVISOR AGENT INTERVENTION REPORT\n\n")
         rf.write(f"**Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         rf.write(f"**Affected task:** {task_id}\n\n")
@@ -89,7 +90,7 @@ def monitor() -> None:
         feedback_files = glob.glob(f"{TMP_DIR}/feedback_*.json")
         for f in feedback_files:
             try:
-                with open(f, 'r') as file:
+                with open(f) as file:
                     data = json.load(file)
                     attempt = data.get("attempt", 0)
                     task_id = data.get("task_id", "UNKNOWN")
@@ -116,10 +117,7 @@ def monitor() -> None:
                 last_log_size = current_log_size
 
             if stuck_counter >= STUCK_THRESHOLD_CYCLES:
-                reason = (
-                    "Pipeline produced no log output for 5 minutes — likely "
-                    "agent API stuck (deadlock/timeout)."
-                )
+                reason = "Pipeline produced no log output for 5 minutes — likely agent API stuck (deadlock/timeout)."
                 logger.warning(f"[Supervisor] {reason}")
                 kill_processes(pids)
                 write_report(reason, pids)
@@ -130,7 +128,7 @@ def monitor() -> None:
         time.sleep(CHECK_INTERVAL_SECS)
 
 
-def start_monitor(detach: bool = True) -> Optional[threading.Thread]:
+def start_monitor(detach: bool = True) -> threading.Thread | None:
     """
     Start the supervisor monitor thread.
     If detach=True (default), runs as a daemon thread; the pipeline continues.

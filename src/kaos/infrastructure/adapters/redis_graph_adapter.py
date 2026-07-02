@@ -21,7 +21,6 @@ Các phương thức bất đồng bộ (async) sử dụng `asyncio.to_thread()
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional
 
 import redis
 
@@ -48,19 +47,23 @@ class RedisGraphAdapter(KnowledgeGraphPort):
     Compatible with Redis 6+ (any Redis instance, no module dependency).
     """
 
-    def __init__(self, redis_url: Optional[str] = None,
-                 host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
-                 db: int = DEFAULT_DB):
+    def __init__(
+        self, redis_url: str | None = None, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, db: int = DEFAULT_DB
+    ):
         if redis_url:
             self.client = redis.from_url(redis_url, decode_responses=True)
         else:
             self.client = redis.Redis(
-                host=host, port=port, db=db,
+                host=host,
+                port=port,
+                db=db,
                 decode_responses=True,
             )
         logger.info(
             "RedisGraphAdapter initialized — connected to %s:%s/%s",
-            host, port, db,
+            host,
+            port,
+            db,
         )
 
     # ──────────────────────────────────────────────────────
@@ -87,64 +90,85 @@ class RedisGraphAdapter(KnowledgeGraphPort):
     #  NODE OPERATIONS
     # ──────────────────────────────────────────────────────
 
-    async def upsert_task(self, task_id: str, title: str = "",
-                          description: str = "", module: str = "",
-                          complexity: str = "MEDIUM",
-                          status: str = "PENDING") -> bool:
+    async def upsert_task(
+        self,
+        task_id: str,
+        title: str = "",
+        description: str = "",
+        module: str = "",
+        complexity: str = "MEDIUM",
+        status: str = "PENDING",
+    ) -> bool:
         def _sync():
             key = self._task_key(task_id)
-            self.client.hset(key, mapping={
-                "task_id": task_id,
-                "title": title,
-                "description": description,
-                "module": module,
-                "complexity": complexity,
-                "status": status,
-            })
+            self.client.hset(
+                key,
+                mapping={
+                    "task_id": task_id,
+                    "title": title,
+                    "description": description,
+                    "module": module,
+                    "complexity": complexity,
+                    "status": status,
+                },
+            )
             # Also track in index
             self.client.sadd(self._idx_key("tasks"), task_id)
             return True
+
         return await asyncio.to_thread(_sync)
 
-    async def upsert_condition(self, cond_id: str, cond_type: str,
-                               content: str, hash_val: str = "") -> str:
+    async def upsert_condition(self, cond_id: str, cond_type: str, content: str, hash_val: str = "") -> str:
         def _sync():
             key = self._cond_key(cond_id)
-            self.client.hset(key, mapping={
-                "cond_id": cond_id,
-                "type": cond_type,
-                "content": content,
-                "hash": hash_val,
-            })
+            self.client.hset(
+                key,
+                mapping={
+                    "cond_id": cond_id,
+                    "type": cond_type,
+                    "content": content,
+                    "hash": hash_val,
+                },
+            )
             self.client.sadd(self._idx_key("conditions"), cond_id)
             return cond_id
+
         return await asyncio.to_thread(_sync)
 
-    async def upsert_result(self, result_id: str, task_id: str,
-                            success: bool, files_created: list,
-                            files_modified: list,
-                            error_message: str = "",
-                            attempt: int = 1) -> str:
+    async def upsert_result(
+        self,
+        result_id: str,
+        task_id: str,
+        success: bool,
+        files_created: list,
+        files_modified: list,
+        error_message: str = "",
+        attempt: int = 1,
+    ) -> str:
         def _sync():
             key = self._result_key(result_id)
-            self.client.hset(key, mapping={
-                "result_id": result_id,
-                "task_id": task_id,
-                "success": str(success).lower(),
-                "files_created": json.dumps(files_created),
-                "files_modified": json.dumps(files_modified),
-                "error_message": error_message,
-                "attempt": str(attempt),
-            })
+            self.client.hset(
+                key,
+                mapping={
+                    "result_id": result_id,
+                    "task_id": task_id,
+                    "success": str(success).lower(),
+                    "files_created": json.dumps(files_created),
+                    "files_modified": json.dumps(files_modified),
+                    "error_message": error_message,
+                    "attempt": str(attempt),
+                },
+            )
             self.client.sadd(self._idx_key("results"), result_id)
 
             # Link Task → Result (PRODUCES)
             self.client.sadd(self._edge_key(task_id, "produces"), result_id)
 
             # Reverse: result → task
-            self.client.hset(f"kg:rev:result_task", result_id, task_id)
+            self.client.hset("kg:rev:result_task", result_id, task_id)
 
             return result_id
+
         return await asyncio.to_thread(_sync)
 
     # ──────────────────────────────────────────────────────
@@ -158,32 +182,37 @@ class RedisGraphAdapter(KnowledgeGraphPort):
             # Condition belongs to Task (reverse)
             self.client.sadd(self._edge_key(cond_id, "required_by"), task_id)
             return True
+
         return await asyncio.to_thread(_sync)
 
     async def link_result_condition(self, result_id: str, cond_id: str) -> bool:
         def _sync():
             self.client.sadd(self._edge_key(result_id, "mutates"), cond_id)
             return True
+
         return await asyncio.to_thread(_sync)
 
     async def link_task_dependency(self, parent_id: str, child_id: str) -> bool:
         """child_id depends_on parent_id (DAG edge: child -> parent)."""
+
         def _sync():
             self.client.sadd(self._edge_key(child_id, "depends_on"), parent_id)
             return True
+
         return await asyncio.to_thread(_sync)
 
     # ──────────────────────────────────────────────────────
     #  QUERY OPERATIONS
     # ──────────────────────────────────────────────────────
 
-    async def get_task(self, task_id: str) -> Optional[dict]:
+    async def get_task(self, task_id: str) -> dict | None:
         def _sync():
             key = self._task_key(task_id)
             if not self.client.exists(key):
                 return None
             data = self.client.hgetall(key)
             return data
+
         return await asyncio.to_thread(_sync)
 
     async def get_task_results(self, task_id: str) -> list:
@@ -211,9 +240,10 @@ class RedisGraphAdapter(KnowledgeGraphPort):
             # Sort by attempt descending
             results.sort(key=lambda r: int(r.get("attempt", 0)), reverse=True)
             return results
+
         return await asyncio.to_thread(_sync)
 
-    async def get_last_latest_result(self, task_id: str) -> Optional[dict]:
+    async def get_last_latest_result(self, task_id: str) -> dict | None:
         results = await self.get_task_results(task_id)
         if not results:
             return None
@@ -228,12 +258,14 @@ class RedisGraphAdapter(KnowledgeGraphPort):
                 if data and data.get("type") == cond_type:
                     matched.append(data)
             return matched
+
         return await asyncio.to_thread(_sync)
 
     async def get_task_dependencies(self, task_id: str) -> list:
         def _sync():
             parents = self.client.smembers(self._edge_key(task_id, "depends_on"))
             return list(parents)
+
         return await asyncio.to_thread(_sync)
 
     async def calculate_levels(self) -> dict:
@@ -241,10 +273,11 @@ class RedisGraphAdapter(KnowledgeGraphPort):
         BFS topological sort based on DEPENDS_ON edges.
         Returns { "levels": {0: [task_id, ...], 1: [...], ...}, "max_level": int }
         """
+
         def _sync():
             all_task_ids = self.client.smembers(self._idx_key("tasks"))
             in_degree = {}
-            children_map: Dict[str, List[str]] = {}
+            children_map: dict[str, list[str]] = {}
 
             for tid in all_task_ids:
                 in_degree[tid] = 0
@@ -258,7 +291,7 @@ class RedisGraphAdapter(KnowledgeGraphPort):
                         children_map.setdefault(parent_id, []).append(child_id)
 
             queue = [tid for tid, deg in in_degree.items() if deg == 0]
-            levels: Dict[int, list] = {}
+            levels: dict[int, list] = {}
             current_level = 0
 
             while queue:
@@ -284,6 +317,7 @@ class RedisGraphAdapter(KnowledgeGraphPort):
                 "levels": levels,
                 "max_level": max(levels.keys()) if levels else 0,
             }
+
         return await asyncio.to_thread(_sync)
 
     async def get_all_tasks(self) -> list:
@@ -295,6 +329,7 @@ class RedisGraphAdapter(KnowledgeGraphPort):
                 if data:
                     tasks.append(data)
             return tasks
+
         return await asyncio.to_thread(_sync)
 
     async def delete_graph(self) -> bool:
@@ -303,6 +338,7 @@ class RedisGraphAdapter(KnowledgeGraphPort):
                 self.client.delete(key)
             logger.info("Knowledge Graph deleted (all kg:* keys cleared).")
             return True
+
         return await asyncio.to_thread(_sync)
 
     async def get_graph_stats(self) -> dict:
@@ -320,4 +356,5 @@ class RedisGraphAdapter(KnowledgeGraphPort):
                 "results": results,
                 "edges": edge_count,
             }
+
         return await asyncio.to_thread(_sync)

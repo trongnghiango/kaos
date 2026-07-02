@@ -7,7 +7,10 @@ tuân thủ quy tắc Dependency Inversion. Các adapter ở tầng hạ tầng 
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from kaos.domain.code_graph import CodeFunctionNode
 
 from kaos.domain.models import Task
 from kaos.domain.value_objects import AgentInstruction
@@ -82,12 +85,12 @@ class StoragePort(ABC):
     """Port thao tác tệp tin & lưu trữ dữ liệu"""
 
     @abstractmethod
-    def load_queue_tasks(self, csv_path: Path, default_module: str, resume: bool = False) -> Dict[str, Task]:
+    def load_queue_tasks(self, csv_path: Path, default_module: str, resume: bool = False) -> dict[str, Task]:
         """Đọc danh sách nhiệm vụ từ file CSV"""
         pass
 
     @abstractmethod
-    def save_queue_status(self, csv_path: Path, tasks: Dict[str, Task]) -> None:
+    def save_queue_status(self, csv_path: Path, tasks: dict[str, Task]) -> None:
         """Ghi nhận trạng thái hoàn thành của tasks vào file CSV"""
         pass
 
@@ -126,22 +129,22 @@ class GatekeeperPort(ABC):
         pass
 
     @abstractmethod
-    async def compile_check(self, module: str, task_id: str) -> Tuple[bool, str]:
+    async def compile_check(self, module: str, task_id: str) -> tuple[bool, str]:
         """Biên dịch và kiểm tra lỗi TypeScript. Trả về: (passed, errors_str)"""
         pass
 
     @abstractmethod
-    async def run_tests(self, module: str, task_id: str) -> Tuple[bool, str]:
+    async def run_tests(self, module: str, task_id: str) -> tuple[bool, str]:
         """Chạy test suite cho module. Trả về: (passed, errors_str)"""
         pass
 
     @abstractmethod
-    async def check_architecture(self, file_paths: List[str], task_id: str) -> Tuple[bool, List[dict]]:
+    async def check_architecture(self, file_paths: list[str], task_id: str) -> tuple[bool, list[dict]]:
         """Kiểm tra sự vi phạm quy tắc kiến trúc. Trả về: (passed, list_of_violations)"""
         pass
 
     @abstractmethod
-    async def check_migration(self, module: str, task_id: str) -> Tuple[bool, str, List[str]]:
+    async def check_migration(self, module: str, task_id: str) -> tuple[bool, str, list[str]]:
         """Kiểm tra tính hợp lệ và tự động sinh migration cho Drizzle ORM. Trả về: (passed, errors_str, created_files)"""
         pass
 
@@ -157,7 +160,7 @@ class LLMProviderPort(ABC):
     """
 
     @abstractmethod
-    async def run_agent(self, instruction: AgentInstruction) -> Tuple[int, str]:
+    async def run_agent(self, instruction: AgentInstruction) -> tuple[int, str]:
         """
         Thực thi một AgentInstruction thông qua LLM provider.
 
@@ -188,22 +191,34 @@ class KnowledgeGraphPort(ABC):
     """
 
     @abstractmethod
-    async def upsert_task(self, task_id: str, title: str = "", description: str = "",
-                          module: str = "", complexity: str = "MEDIUM",
-                          status: str = "PENDING") -> bool:
+    async def upsert_task(
+        self,
+        task_id: str,
+        title: str = "",
+        description: str = "",
+        module: str = "",
+        complexity: str = "MEDIUM",
+        status: str = "PENDING",
+    ) -> bool:
         """Tạo hoặc cập nhật một :Task node (Nhân)."""
         pass
 
     @abstractmethod
-    async def upsert_condition(self, cond_id: str, cond_type: str, content: str,
-                               hash_val: str = "") -> str:
+    async def upsert_condition(self, cond_id: str, cond_type: str, content: str, hash_val: str = "") -> str:
         """Tạo hoặc cập nhật một :Condition node (Duyên). Trả về cond_id."""
         pass
 
     @abstractmethod
-    async def upsert_result(self, result_id: str, task_id: str, success: bool,
-                            files_created: list, files_modified: list,
-                            error_message: str = "", attempt: int = 1) -> str:
+    async def upsert_result(
+        self,
+        result_id: str,
+        task_id: str,
+        success: bool,
+        files_created: list,
+        files_modified: list,
+        error_message: str = "",
+        attempt: int = 1,
+    ) -> str:
         """Tạo một :Result node (Quả) và liên kết với Task qua edge :PRODUCES."""
         pass
 
@@ -223,7 +238,7 @@ class KnowledgeGraphPort(ABC):
         pass
 
     @abstractmethod
-    async def get_task(self, task_id: str) -> Optional[dict]:
+    async def get_task(self, task_id: str) -> dict | None:
         """Lấy thông tin một Task node."""
         pass
 
@@ -253,7 +268,7 @@ class KnowledgeGraphPort(ABC):
         pass
 
     @abstractmethod
-    async def get_last_latest_result(self, task_id: str) -> Optional[dict]:
+    async def get_last_latest_result(self, task_id: str) -> dict | None:
         """Lấy Result node mới nhất của một Task (attempt cao nhất)."""
         pass
 
@@ -267,11 +282,12 @@ class KnowledgeGraphPort(ABC):
         """Thống kê số lượng nodes/edges trong graph."""
         pass
 
+
 class CachePort(ABC):
     """Port cho caching layer — lưu trữ kết quả phân tích để tái sử dụng."""
 
     @abstractmethod
-    def get(self, key: str) -> Optional[dict]:
+    def get(self, key: str) -> dict | None:
         """Đọc cache entry. Trả về None nếu miss."""
         pass
 
@@ -333,8 +349,8 @@ class CodeScannerPort(ABC):
     async def scan_structural(
         self,
         target_path: str,
-        files: Optional[List[str]] = None,
-    ) -> List["CodeFunctionNode"]:
+        files: list[str] | None = None,
+    ) -> list["CodeFunctionNode"]:
         """
         Quét cấu trúc codebase bằng TypeScript Compiler API.
 
@@ -350,10 +366,10 @@ class CodeScannerPort(ABC):
     @abstractmethod
     async def enrich_semantic(
         self,
-        nodes: List["CodeFunctionNode"],
+        nodes: list["CodeFunctionNode"],
         target_path: str,
         concurrency: int = 3,
-    ) -> List["CodeFunctionNode"]:
+    ) -> list["CodeFunctionNode"]:
         """
         Dùng LLM để enrich ngữ nghĩa cho function nodes.
         Gửi từng function body cô lập cho LLM để phân tích.
@@ -376,12 +392,12 @@ class CodeGraphRepositoryPort(ABC):
     """
 
     @abstractmethod
-    async def save_all(self, nodes: List["CodeFunctionNode"]) -> None:
+    async def save_all(self, nodes: list["CodeFunctionNode"]) -> None:
         """Lưu toàn bộ nodes + rebuild indexes."""
         pass
 
     @abstractmethod
-    async def load_all(self) -> List["CodeFunctionNode"]:
+    async def load_all(self) -> list["CodeFunctionNode"]:
         """Đọc toàn bộ nodes từ storage."""
         pass
 
@@ -390,7 +406,7 @@ class CodeGraphRepositoryPort(ABC):
         self,
         query: str,
         limit: int = 10,
-    ) -> List["CodeFunctionNode"]:
+    ) -> list["CodeFunctionNode"]:
         """
         Tìm function theo tên hoặc keywords.
         Dùng fuzzy matching đơn giản — không cần full-text search engine.
@@ -401,15 +417,15 @@ class CodeGraphRepositoryPort(ABC):
     async def get_functions_by_file(
         self,
         file_path: str,
-    ) -> List["CodeFunctionNode"]:
+    ) -> list["CodeFunctionNode"]:
         """Lấy tất cả functions trong 1 file."""
         pass
 
     @abstractmethod
     async def get_affected_functions(
         self,
-        file_paths: List[str],
-    ) -> List["CodeFunctionNode"]:
+        file_paths: list[str],
+    ) -> list["CodeFunctionNode"]:
         """
         Tìm tất cả functions bị ảnh hưởng bởi các file thay đổi.
         Bao gồm:
@@ -419,6 +435,6 @@ class CodeGraphRepositoryPort(ABC):
         pass
 
     @abstractmethod
-    async def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self) -> dict[str, Any]:
         """Thống kê: tổng số nodes, số files, số functions exported..."""
         pass

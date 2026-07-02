@@ -8,7 +8,6 @@ import csv
 import json
 import logging
 from pathlib import Path
-from typing import Dict
 
 from kaos.application.ports import StoragePort
 from kaos.domain.models import Task
@@ -19,13 +18,13 @@ logger = logging.getLogger("STAX_Harness")
 class FileStorageAdapter(StoragePort):
     """Triển khai StoragePort trực tiếp trên Local Filesystem"""
 
-    def load_queue_tasks(self, csv_path: Path, default_module: str, resume: bool = False) -> Dict[str, Task]:
+    def load_queue_tasks(self, csv_path: Path, default_module: str, resume: bool = False) -> dict[str, Task]:
         if not csv_path.exists():
             raise FileNotFoundError(f"Không tìm thấy file queue: {csv_path}")
 
-        tasks: Dict[str, Task] = {}
+        tasks: dict[str, Task] = {}
 
-        with open(csv_path, "r", encoding="utf-8") as f:
+        with open(csv_path, encoding="utf-8") as f:
             first_line = f.readline().strip()
             delimiter = "\t" if "\t" in first_line else ","
             f.seek(0)
@@ -33,10 +32,7 @@ class FileStorageAdapter(StoragePort):
             reader = csv.DictReader(f, delimiter=delimiter)
             required_cols = {"task_id", "title", "description"}
             if not required_cols.issubset(reader.fieldnames):
-                raise ValueError(
-                    f"File CSV thiếu các cột bắt buộc: {required_cols}. "
-                    f"Cột hiện tại: {reader.fieldnames}"
-                )
+                raise ValueError(f"File CSV thiếu các cột bắt buộc: {required_cols}. Cột hiện tại: {reader.fieldnames}")
 
             for row in reader:
                 task_id = row["task_id"].strip()
@@ -52,17 +48,17 @@ class FileStorageAdapter(StoragePort):
                     depends_on=depends,
                     status=status,
                 )
-                
+
                 # Nếu resume và task đã SUCCESS, giữ nguyên trạng thái SUCCESS
                 if resume and status == "SUCCESS":
                     task.status = "SUCCESS"
-                
+
                 tasks[task_id] = task
 
         logger.info(f"📂 [KAOS Storage] Đã tải {len(tasks)} tasks từ file {csv_path.name}")
         return tasks
 
-    def save_queue_status(self, csv_path: Path, tasks: Dict[str, Task]) -> None:
+    def save_queue_status(self, csv_path: Path, tasks: dict[str, Task]) -> None:
         if not csv_path.exists():
             logger.warning(f"⚠️ Không tìm thấy file CSV gốc: {csv_path} để cập nhật trạng thái.")
             return
@@ -70,9 +66,9 @@ class FileStorageAdapter(StoragePort):
         try:
             rows = []
             fieldnames = []
-            
+
             # Đọc lại file cũ để giữ nguyên các cột phụ khác (nếu có)
-            with open(csv_path, mode="r", encoding="utf-8") as f:
+            with open(csv_path, encoding="utf-8") as f:
                 reader = csv.DictReader(f)
                 fieldnames = reader.fieldnames
                 for row in reader:
@@ -86,7 +82,7 @@ class FileStorageAdapter(StoragePort):
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(rows)
-                
+
             logger.debug(f"💾 [KAOS Storage] Đã lưu trạng thái tasks vào: {csv_path.name}")
         except Exception as e:
             logger.error(f"⚠️ [KAOS Storage] Lỗi lưu file CSV status: {e}")
@@ -99,7 +95,7 @@ class FileStorageAdapter(StoragePort):
     def read_json(self, path: Path) -> dict:
         if not path.exists():
             return {}
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
 
     def delete_file(self, path: Path) -> None:
@@ -107,7 +103,7 @@ class FileStorageAdapter(StoragePort):
             path.unlink()
 
     def read_text(self, path: Path) -> str:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return f.read()
 
     def file_exists(self, path: Path) -> bool:

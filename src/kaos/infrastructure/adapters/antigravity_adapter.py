@@ -13,7 +13,6 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Tuple
 
 from kaos.application.ports import LLMProviderPort
 from kaos.domain.value_objects import AgentInstruction
@@ -95,7 +94,7 @@ class AntigravityAdapter(LLMProviderPort):
             except Exception as e:
                 logger.warning(f"   ⚠️ [Antigravity] Không thể cleanup stale file {pending_file}: {e}")
 
-    async def run_agent(self, instruction: AgentInstruction) -> Tuple[int, str]:
+    async def run_agent(self, instruction: AgentInstruction) -> tuple[int, str]:
         self._cleanup_stale_files()
         self._warn_if_no_watcher()
 
@@ -122,39 +121,27 @@ class AntigravityAdapter(LLMProviderPort):
 
         # 2. Tạo .pending — signal cho Antigravity rằng có task mới
         pending_file.touch()
-        logger.info(
-            f"   🤖 [Antigravity/{instruction.skill_name}] "
-            f"Task queued: {task_id} | waiting for agent..."
-        )
+        logger.info(f"   🤖 [Antigravity/{instruction.skill_name}] Task queued: {task_id} | waiting for agent...")
 
         # 3. Poll kết quả
         deadline = time.time() + instruction.timeout
         while time.time() < deadline:
             if done_file.exists():
                 summary = done_file.read_text(encoding="utf-8").strip()
-                logger.info(
-                    f"   ✅ [Antigravity/{instruction.skill_name}] "
-                    f"Task completed: {task_id}"
-                )
+                logger.info(f"   ✅ [Antigravity/{instruction.skill_name}] Task completed: {task_id}")
                 self._cleanup_task_files(task_id)
                 return 0, summary
 
             if error_file.exists():
                 error_msg = error_file.read_text(encoding="utf-8").strip()
-                logger.error(
-                    f"   ❌ [Antigravity/{instruction.skill_name}] "
-                    f"Task failed: {task_id} | {error_msg[:200]}"
-                )
+                logger.error(f"   ❌ [Antigravity/{instruction.skill_name}] Task failed: {task_id} | {error_msg[:200]}")
                 self._cleanup_task_files(task_id)
                 return 1, error_msg
 
             await asyncio.sleep(self.poll_interval)
 
         # Timeout
-        logger.warning(
-            f"   ⏰ [Antigravity/{instruction.skill_name}] "
-            f"Timeout sau {instruction.timeout}s: {task_id}"
-        )
+        logger.warning(f"   ⏰ [Antigravity/{instruction.skill_name}] Timeout sau {instruction.timeout}s: {task_id}")
         self._cleanup_task_files(task_id)
         return -1, "TIMEOUT"
 

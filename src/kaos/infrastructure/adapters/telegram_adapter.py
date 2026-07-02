@@ -6,12 +6,12 @@ Sends alerts and receives commands (e.g. /kill, /status) via plain
 Telegram Bot API (no python-telegram-bot dependency).
 Uses asyncio + aiohttp for fully async communication.
 """
+
 import asyncio
 import html
 import logging
-import time
-from typing import Callable, Coroutine, Any, Dict, Optional
-from pathlib import Path
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 import aiohttp
 
@@ -36,8 +36,8 @@ class TelegramAdapter(NotificationPort):
         self._chat_id = chat_id
         self._polling_interval = polling_interval
         self._base_url = f"https://api.telegram.org/bot{token}"
-        self._session: Optional[aiohttp.ClientSession] = None
-        self._handlers: Dict[str, Handler] = {}
+        self._session: aiohttp.ClientSession | None = None
+        self._handlers: dict[str, Handler] = {}
         self._offset: int = 0
         self._running = False
         self._max_errors = max_consecutive_errors
@@ -55,11 +55,7 @@ class TelegramAdapter(NotificationPort):
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()
         url = f"{self._base_url}/sendMessage"
-        payload = {
-            "chat_id": self._chat_id,
-            "text": text,
-            "parse_mode": "HTML"
-        }
+        payload = {"chat_id": self._chat_id, "text": text, "parse_mode": "HTML"}
         async with self._session.post(url, json=payload) as resp:
             if resp.status != 200:
                 logger.error(f"Telegram sendMessage failed: {resp.status} – {await resp.text()}")
@@ -67,10 +63,7 @@ class TelegramAdapter(NotificationPort):
     async def send_alert(self, title: str, details: str, level: str = "WARNING") -> None:
         escaped_title = html.escape(title)
         escaped_details = html.escape(details)
-        text = (
-            f"🚨 <b>{level}</b>: {escaped_title}\n\n"
-            f"<pre>{escaped_details[:500]}</pre>"
-        )
+        text = f"🚨 <b>{level}</b>: {escaped_title}\n\n<pre>{escaped_details[:500]}</pre>"
         await self.send_message(text)
 
     # ── Lắng nghe command (polling) ───────────────────────────────
@@ -101,9 +94,7 @@ class TelegramAdapter(NotificationPort):
                 if resp.status != 200:
                     self._error_count += 1
                     if self._error_count >= self._max_errors:
-                        logger.warning(
-                            f"   ⚠️ Telegram getUpdates failed {self._error_count}x, stop polling"
-                        )
+                        logger.warning(f"   ⚠️ Telegram getUpdates failed {self._error_count}x, stop polling")
                         self._running = False
                     return
                 data = await resp.json()

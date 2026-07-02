@@ -2,23 +2,18 @@ import asyncio
 import json
 import logging
 import re
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
+from kaos.application.ports import GatekeeperPort, KnowledgeGraphPort, LLMProviderPort, StoragePort
 from kaos.config import (
-    MAX_RETRIES_CODER,
-    MAX_RETRIES_PLANNER,
-    TIMEOUT_SECS_PLANNER,
     TIMEOUT_SECS_CODER,
-    TIMEOUT_SECS_GATEKEEPER,
+    TIMEOUT_SECS_PLANNER,
     Prompts,
-    logger,
 )
 from kaos.domain.scout_results import TaskBudget
 from kaos.domain.value_objects import AgentInstruction, ExecutionConfig
-from kaos.application.ports import LLMProviderPort, GatekeeperPort, StoragePort, KnowledgeGraphPort
 
 logger = logging.getLogger("KAOS_Harness")
 
@@ -26,8 +21,8 @@ logger = logging.getLogger("KAOS_Harness")
 @dataclass
 class CoderResult:
     success: bool
-    files_created: List[str] = field(default_factory=list)
-    files_modified: List[str] = field(default_factory=list)
+    files_created: list[str] = field(default_factory=list)
+    files_modified: list[str] = field(default_factory=list)
     error_msg: str = ""
 
 
@@ -60,11 +55,11 @@ class TaskRunner:
         llm_provider: LLMProviderPort,
         gatekeeper: GatekeeperPort,
         storage: StoragePort,
-        knowledge_graph: Optional[KnowledgeGraphPort],
+        knowledge_graph: KnowledgeGraphPort | None,
         config: ExecutionConfig,
         tmp_dir: Path,
         target_path: str,
-        decision_engine: Optional[Any] = None,
+        decision_engine: Any | None = None,
     ):
         self.llm_provider = llm_provider
         self.gatekeeper = gatekeeper
@@ -105,10 +100,16 @@ class TaskRunner:
 
     # ── Knowledge Graph Integration ──────────────────────────────────
 
-    async def upsert_attempt(self, task_id: str, attempt: int,
-                              success: bool, files_created: list,
-                              files_modified: list, error_msg: str,
-                              feedback_msg: str = "") -> None:
+    async def upsert_attempt(
+        self,
+        task_id: str,
+        attempt: int,
+        success: bool,
+        files_created: list,
+        files_modified: list,
+        error_msg: str,
+        feedback_msg: str = "",
+    ) -> None:
         """
         Save attempt as Result (Quả) + feedback Condition (Duyên động) into RedisGraph.
         """
@@ -131,13 +132,14 @@ class TaskRunner:
         if feedback_msg:
             cond_id = f"fb_{task_id}_{attempt}"
             await kg.upsert_condition(
-                cond_id, "feedback",
+                cond_id,
+                "feedback",
                 feedback_msg[:2000],
             )
             await kg.link_result_condition(result_id, cond_id)
             await kg.link_task_condition(task_id, cond_id)
 
-    async def upsert_task_context(self, task: Any, ctx: Dict[str, Any]) -> None:
+    async def upsert_task_context(self, task: Any, ctx: dict[str, Any]) -> None:
         """
         Upsert Task (Nhân) + Conditions (Duyên) + Dependencies (DEPENDS_ON)
         vào đồ thị Nhân-Duyên-Quả trên RedisGraph (qua KnowledgeGraphPort).
@@ -160,7 +162,9 @@ class TaskRunner:
         skill_type = self.select_skill_file(task.title).replace(".md", "")
         skill_cond_id = f"skill_{skill_type}"
         await kg.upsert_condition(
-            skill_cond_id, "skill", skill_type,
+            skill_cond_id,
+            "skill",
+            skill_type,
             hash_val=task.module,
         )
         await kg.link_task_condition(task.task_id, skill_cond_id)
@@ -169,14 +173,18 @@ class TaskRunner:
         if ctx.get("schema_summary"):
             schema_cond_id = f"schema_{task.task_id}"
             await kg.upsert_condition(
-                schema_cond_id, "schema", ctx["schema_summary"],
+                schema_cond_id,
+                "schema",
+                ctx["schema_summary"],
             )
             await kg.link_task_condition(task.task_id, schema_cond_id)
 
         # Spec / description as dynamic condition
         spec_cond_id = f"desc_{task.task_id}"
         await kg.upsert_condition(
-            spec_cond_id, "spec", task.description[:500],
+            spec_cond_id,
+            "spec",
+            task.description[:500],
         )
         await kg.link_task_condition(task.task_id, spec_cond_id)
 
@@ -184,12 +192,11 @@ class TaskRunner:
         for dep_id in task.depends_on:
             await kg.link_task_dependency(dep_id, task.task_id)
 
-        logger.debug(
-            f"   [KG] Upserted task '{task.task_id}' with "
-            f"{len(task.depends_on)} dependencies & 3 conditions"
-        )
+        logger.debug(f"   [KG] Upserted task '{task.task_id}' with {len(task.depends_on)} dependencies & 3 conditions")
 
-    def build_task_context(self, task: Any, report: Optional[Any] = None, code_graph_repo: Optional[Any] = None) -> Dict[str, Any]:
+    def build_task_context(
+        self, task: Any, report: Any | None = None, code_graph_repo: Any | None = None
+    ) -> dict[str, Any]:
         """Build structured context JSON for LLM execution, merging task details and ScoutReport if available."""
         ctx = {
             "task_id": task.task_id,
@@ -210,22 +217,24 @@ class TaskRunner:
             ctx["max_turns"] = 15
 
         if report:
-            ctx.update({
-                "schema_summary": report.schema_summary,
-                "raw_data_summary": report.raw_data_summary,
-                "spec_summary": report.spec_summary,
-                "conflict_points": [
-                    {
-                        "type": c.conflict_type.value,
-                        "severity": c.severity.value,
-                        "description": c.description,
-                        "suggestion": c.suggestion,
-                    }
-                    for c in report.conflict_points
-                ],
-                "compatibility_score": report.compatibility_score,
-                "reasoning": report.reasoning,
-            })
+            ctx.update(
+                {
+                    "schema_summary": report.schema_summary,
+                    "raw_data_summary": report.raw_data_summary,
+                    "spec_summary": report.spec_summary,
+                    "conflict_points": [
+                        {
+                            "type": c.conflict_type.value,
+                            "severity": c.severity.value,
+                            "description": c.description,
+                            "suggestion": c.suggestion,
+                        }
+                        for c in report.conflict_points
+                    ],
+                    "compatibility_score": report.compatibility_score,
+                    "reasoning": report.reasoning,
+                }
+            )
 
         # Tra cứu knowledge graph cho function liên quan
         if code_graph_repo:
@@ -233,6 +242,7 @@ class TaskRunner:
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
                     import nest_asyncio
+
                     nest_asyncio.apply()
                 related = loop.run_until_complete(code_graph_repo.search_functions(task.title))
                 if related:
@@ -332,9 +342,9 @@ class TaskRunner:
             f"2. Ghi kết quả chạy (danh sách các file đã sửa/tạo mới) vào file JSON tại {out_file.resolve()}.\n"
             f"   Định dạng JSON yêu cầu:\n"
             f"   {{\n"
-            f"     \"files_created\": [\"relative/path/1.ts\"],\n"
-            f"     \"files_modified\": [\"relative/path/2.ts\"],\n"
-            f"     \"error_msg\": \"nếu có lỗi\"\n"
+            f'     "files_created": ["relative/path/1.ts"],\n'
+            f'     "files_modified": ["relative/path/2.ts"],\n'
+            f'     "error_msg": "nếu có lỗi"\n'
             f"   }}\n"
         )
 
@@ -401,8 +411,8 @@ class TaskRunner:
         self,
         task: Any,
         ctx_file: Path,
-        files_created: List[str],
-        files_modified: List[str],
+        files_created: list[str],
+        files_modified: list[str],
         compile_res: CompileResult,
         test_res: TestResult,
         attempt: int,
@@ -427,7 +437,7 @@ class TaskRunner:
         )
 
         try:
-            exit_code, _logs = await self.llm_provider.run_agent(
+            _exit_code, _logs = await self.llm_provider.run_agent(
                 AgentInstruction.from_raw(
                     eval_instruction,
                     timeout=float(TIMEOUT_SECS_PLANNER),
@@ -468,7 +478,7 @@ class TaskRunner:
         self,
         task: Any,
         attempt: int,
-        baseline: Optional[Dict[str, Any]],
+        baseline: dict[str, Any] | None,
     ) -> CompileResult:
         """Run gatekeeper compiler check. Filter pre-existing baseline errors."""
         logger.info("   🛡️  [Gatekeeper] Running compiler check...")
@@ -486,14 +496,14 @@ class TaskRunner:
                 logger.info("      ✅ Compile OK (only pre-existing baseline errors found)")
                 return CompileResult(passed=True)
 
-            logger.warning(f"      ❌ Compile failed (new errors found)")
+            logger.warning("      ❌ Compile failed (new errors found)")
             return CompileResult(passed=False, new_errors=new_errs)
 
         except Exception as e:
             logger.error(f"      ❌ [Gatekeeper] Compile check exception: {e}")
             return CompileResult(passed=False, new_errors=f"Exception: {e}")
 
-    async def run_gatekeeper_architecture(self, task: Any, attempt: int) -> Tuple[bool, str]:
+    async def run_gatekeeper_architecture(self, task: Any, attempt: int) -> tuple[bool, str]:
         """Run gatekeeper architecture rules check."""
         logger.info("   🛡️  [Gatekeeper] Checking Clean Architecture compliance...")
         try:
@@ -508,15 +518,15 @@ class TaskRunner:
 
             if self.decision_engine:
                 diag_score, diag_reasons = self.decision_engine.evaluate_violations(
-                    compile_passed=True,
-                    compile_error="",
-                    arch_passed=passed,
-                    violations=violations
+                    compile_passed=True, compile_error="", arch_passed=passed, violations=violations
                 )
                 if not passed:
                     logger.warning(f"      ❌ Vi phạm kiến trúc (Score: {diag_score:.1f}/100)!")
                     reasons_str = "\n".join(diag_reasons[:5])
-                    return False, f"[ARCHITECTURE GATEKEEPER] Code vi phạm quy tắc kiến trúc dự án!\nĐiểm chất lượng: {diag_score:.1f}/100\nCác vi phạm:\n{reasons_str}"
+                    return (
+                        False,
+                        f"[ARCHITECTURE GATEKEEPER] Code vi phạm quy tắc kiến trúc dự án!\nĐiểm chất lượng: {diag_score:.1f}/100\nCác vi phạm:\n{reasons_str}",
+                    )
             return True, ""
         except Exception as e:
             logger.error(f"      ❌ [Gatekeeper] Arch check exception: {e}")
@@ -548,7 +558,7 @@ class TaskRunner:
         self,
         task: Any,
         attempt: int,
-    ) -> Tuple[bool, str, List[str]]:
+    ) -> tuple[bool, str, list[str]]:
         """Run database migration check."""
         logger.info("   🛡️  [Gatekeeper] Running database migration check...")
         try:
@@ -568,8 +578,8 @@ class TaskRunner:
     @staticmethod
     def is_new_error(
         compile_errors_str: str,
-        baseline: Optional[Dict[str, Any]],
-    ) -> Tuple[bool, str]:
+        baseline: dict[str, Any] | None,
+    ) -> tuple[bool, str]:
         """
         Compare compile errors with baseline. Return (has_new_errors, new_errors_str).
         """
@@ -583,7 +593,7 @@ class TaskRunner:
             line = line.strip()
             if not line:
                 continue
-            normalized = re.sub(r'\(\d+,\d+\)', '', line).strip()
+            normalized = re.sub(r"\(\d+,\d+\)", "", line).strip()
             if normalized not in baseline_lines:
                 new_lines.append(line)
         if new_lines:

@@ -21,3 +21,47 @@ where = ["src"]
 
 [tool.setuptools.package-dir]
 "" = "src"
+
+[tool.ruff]
+# Thư mục chứa code cần lint/format
+src = ["src"]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+# Các bộ luật linting được kích hoạt:
+# E/W: pycodestyle (style guide)
+# F: Pyflakes (lỗi logic/khai báo)
+# I: isort (sắp xếp import chuẩn)
+# B: flake8-bugbear (bắt lỗi logic thiết kế tiềm ẩn)
+# UP: pyupgrade (nâng cấp cú pháp python mới)
+# RUF: Các luật đặc trưng của Ruff
+select = ["E", "F", "I", "B", "UP", "RUF"]
+ignore = [
+    "E501",   # Bỏ qua cảnh báo dòng quá dài (line too long)
+    "E402",   # Cho phép import không ở đầu file (để boot config động trước khi import)
+    "RUF001", # Cho phép dùng unicode tự nhiên trong log/alert (ví dụ: icon ℹ️)
+    "RUF002", # Cho phép ký tự unicode docstring
+    "RUF003", # Cho phép ký tự unicode trong comment
+    "B905",   # Cho phép zip() không cần strict= parameter (hỗ trợ python < 3.10 tương thích ngược)
+    "B904",   # Cho phép raise Exception mà không bắt buộc phải from err
+    "RUF022", # Không bắt buộc sắp xếp __all__ theo bảng chữ cái
+    "RUF059", # Không cảnh báo biến unpack không dùng (thường dùng để giữ cấu trúc tuple trả về)
+    "RUF013", # Cho phép implicit Optional type hint (ví dụ: arg: dict = None)
+    "RUF005", # Cho phép nối list/tuple theo kiểu cũ (self.cmd_prefix + [...]) thay vì unpack
+    "RUF006", # Cho phép chạy background task bằng asyncio.create_task mà không bắt buộc phải lưu reference
+    "E741",   # Cho phép đặt tên biến ngắn có thể gây mơ hồ như 'l'
+    "B007",   # Cho phép loop index variable unused (ví dụ: for tid, task in items() chỉ dùng task)
+]
+
+# Cho phép tự động sửa lỗi (fixable)
+fixable = ["ALL"]
+unfixable = []
+
+[tool.ruff.format]
+# Cấu hình định dạng code giống chuẩn Black
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+

@@ -4,9 +4,9 @@ Domain Value Objects for KAOS Framework
 Định nghĩa các kiểu dữ liệu bất biến, hằng số, cấu hình trạng thái trong Domain.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 class TaskStatus(str, Enum):
@@ -20,6 +20,7 @@ class TaskStatus(str, Enum):
 @dataclass(frozen=True)
 class SessionMetadata:
     """Giá trị bất biến mô tả metadata của phiên làm việc (session)"""
+
     session_id: str
     target_module: str
     branch_name: str
@@ -28,6 +29,7 @@ class SessionMetadata:
 @dataclass(frozen=True)
 class ExecutionConfig:
     """Cấu hình chạy an toàn của Harness"""
+
     max_retries_coder: int = 5
     max_retries_planner: int = 3
     max_retries_analyzer: int = 2
@@ -59,7 +61,7 @@ class AgentInstruction:
     # Context đầy đủ của task trong DAG:
     # { "task_id": ..., "module": ..., "title": ..., "description": ...,
     #   "depends_on_results": { "TASK_ID": { "success": bool, "files_created": [...] } } }
-    task_context: Dict[str, Any]
+    task_context: dict[str, Any]
 
     # Đường dẫn tuyệt đối đến codebase mục tiêu (STAX_ASP hoặc dự án khác)
     target_path: str
@@ -78,7 +80,7 @@ class AgentInstruction:
 
     # Số turns tối đa Goose được chạy. Nếu None, Goose dùng default (thường là 50).
     # Phải match với TaskBudget.max_turns để tránh timeout.
-    max_turns: Optional[int] = None
+    max_turns: int | None = None
 
     @classmethod
     def from_raw(
@@ -88,7 +90,7 @@ class AgentInstruction:
         skill_name: str = "unknown",
         target_path: str = "",
         output_file: str = "",
-        max_turns: Optional[int] = None,
+        max_turns: int | None = None,
     ) -> "AgentInstruction":
         """
         Factory method backward-compat: tạo AgentInstruction từ plain string.

@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +69,7 @@ class GitSandboxAdapter:
         self,
         task_id: str,
         target_branch: str = "develop",
-    ) -> Tuple[bool, List[str]]:
+    ) -> tuple[bool, list[str]]:
         """
         Merge sandbox vào target_branch.
 
@@ -96,9 +95,7 @@ class GitSandboxAdapter:
         else:
             # Merge có conflict
             conflict_files = await self._get_conflict_files()
-            logger.warning(
-                f"  ⚠️  Merge conflict in {len(conflict_files)} files: {conflict_files}"
-            )
+            logger.warning(f"  ⚠️  Merge conflict in {len(conflict_files)} files: {conflict_files}")
             return (False, conflict_files)
 
     async def rollback(self, task_id: str, target_branch: str = "develop") -> None:
@@ -125,7 +122,7 @@ class GitSandboxAdapter:
     async def _run_git(
         self,
         command: str,
-        args: List[str],
+        args: list[str],
         check: bool = True,
     ) -> asyncio.subprocess.Process:
         """Chạy git command trong target directory."""
@@ -139,16 +136,12 @@ class GitSandboxAdapter:
 
         if check and proc.returncode != 0:
             err_text = stderr.decode("utf-8", errors="replace")[:300]
-            raise RuntimeError(
-                f"Git {command} failed (exit={proc.returncode}): {err_text}"
-            )
+            raise RuntimeError(f"Git {command} failed (exit={proc.returncode}): {err_text}")
 
         return proc
 
-    async def _get_conflict_files(self) -> List[str]:
+    async def _get_conflict_files(self) -> list[str]:
         """Lấy danh sách file đang conflict."""
-        proc = await self._run_git(
-            "diff", ["--name-only", "--diff-filter=U"], check=False
-        )
+        proc = await self._run_git("diff", ["--name-only", "--diff-filter=U"], check=False)
         output = proc.stdout.decode("utf-8", errors="replace").strip()
         return [f.strip() for f in output.split("\n") if f.strip()]

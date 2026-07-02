@@ -8,8 +8,7 @@ Planner → Coder → Evaluator → Gatekeeper pipeline, support for
 topological sort, parallel execution, resume/rerun, and supervisor monitoring.
 """
 
-from .task_queue_engine import TaskQueueEngine
 from .execution_policy import FeedbackPolicy
+from .task_queue_engine import TaskQueueEngine
 
-__all__ = ["TaskQueueEngine", "FeedbackPolicy"]
-
+__all__ = ["FeedbackPolicy", "TaskQueueEngine"]

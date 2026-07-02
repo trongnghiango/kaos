@@ -10,18 +10,17 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
+from kaos.application.ports import CachePort, GatekeeperPort, LLMProviderPort, StoragePort
 from kaos.domain.scout_results import ScoutReport
 from kaos.domain.value_objects import AgentInstruction, ExecutionConfig
-from kaos.application.ports import CachePort, GatekeeperPort, LLMProviderPort, StoragePort
-from kaos.config import Prompts, PROJECT_ROOT
 
 logger = logging.getLogger("KAOS_Harness")
 
-SCOUT_TURNS = 7          # mỗi scout chỉ 7 turns, timeout riêng cho từng loại
-SCOUT_TIMEOUT = 120      # 2 phút timeout mặc định cho scout
-SCOUT_TIMEOUT_SPEC = 300 # 5 phút cho SpecScout (spec thường dài, cần thời gian đọc)
+SCOUT_TURNS = 7  # mỗi scout chỉ 7 turns, timeout riêng cho từng loại
+SCOUT_TIMEOUT = 120  # 2 phút timeout mặc định cho scout
+SCOUT_TIMEOUT_SPEC = 300  # 5 phút cho SpecScout (spec thường dài, cần thời gian đọc)
 
 
 class ScoutCoordinator:
@@ -53,8 +52,8 @@ class ScoutCoordinator:
 
     async def execute(
         self,
-        raw_data: Optional[str] = None,
-        spec: Optional[str] = None,
+        raw_data: str | None = None,
+        spec: str | None = None,
         target_path: str = "",
         force_reparse: bool = False,
     ) -> ScoutReport:
@@ -74,7 +73,7 @@ class ScoutCoordinator:
 
         # 1. Schema Scout (có cache)
         schema_hash = self.cache.hash_codebase(target_path) if target_path else ""
-        schema_summary: Dict[str, Any] = {}
+        schema_summary: dict[str, Any] = {}
 
         if schema_hash and not force_reparse:
             cached = self.cache.get(f"schema:{schema_hash}")
@@ -101,6 +100,7 @@ class ScoutCoordinator:
         # 3. Synthesizer (pure Python, không LLM)
         logger.info("   🔗 [Synthesizer] Merging scout results...")
         from kaos.infrastructure.adapters.synthesizer import Synthesizer
+
         report = Synthesizer.merge(
             schema_summary=schema_summary,
             raw_data_summary=data_summary,
@@ -117,7 +117,7 @@ class ScoutCoordinator:
 
     # ── Schema Scout ───────────────────────────────────────
 
-    async def _schema_scout(self, target_path: str) -> Dict[str, Any]:
+    async def _schema_scout(self, target_path: str) -> dict[str, Any]:
         """Trích xuất schema từ codebase qua Gatekeeper."""
         try:
             raw_schema = await self.gatekeeper.extract_schema()
@@ -128,7 +128,7 @@ class ScoutCoordinator:
             return {"tables": [], "columns": [], "modules": [], "columns_by_table": {}}
 
     @staticmethod
-    def _normalize_schema(raw: Any) -> Dict[str, Any]:
+    def _normalize_schema(raw: Any) -> dict[str, Any]:
         """Chuẩn hoá schema output từ Gatekeeper thành dict chuẩn."""
         if isinstance(raw, dict):
             return {
@@ -142,7 +142,7 @@ class ScoutCoordinator:
 
     # ── Data Scout ─────────────────────────────────────────
 
-    async def _data_scout(self, raw_data_path: str) -> Dict[str, Any]:
+    async def _data_scout(self, raw_data_path: str) -> dict[str, Any]:
         """Dùng LLM (7 turns) để phân tích nhanh raw data file."""
         ctx_file = self.tmp_dir / "scout_data_ctx.json"
         out_file = self.tmp_dir / "scout_data_result.json"
@@ -166,7 +166,7 @@ class ScoutCoordinator:
             f'    "type": "detected_type",\n'
             f'    "is_key": false,\n'
             f'    "sample_values": ["val1", "val2"]\n'
-            f'  }}],\n'
+            f"  }}],\n"
             f'  "file_type": "xlsx|csv|tsv",\n'
             f'  "row_count": 100,\n'
             f'  "detected_keys": ["col1"]\n'
@@ -197,12 +197,12 @@ class ScoutCoordinator:
             "detected_keys": [],
         }
 
-    async def _empty_data_summary(self) -> Dict[str, Any]:
+    async def _empty_data_summary(self) -> dict[str, Any]:
         return {"tables": [], "columns": [], "file_type": "", "row_count": 0, "detected_keys": []}
 
     # ── Spec Scout ────────────────────────────────────────
 
-    async def _spec_scout(self, spec: str) -> Dict[str, Any]:
+    async def _spec_scout(self, spec: str) -> dict[str, Any]:
         """Parse spec content. Prefer JSON block if present, otherwise fallback to LLM.
 
         The spec may contain a fenced JSON block at the end (```json ... ```). If found, we
@@ -246,11 +246,11 @@ class ScoutCoordinator:
             f'  "requirements": [\n'
             f'    "req1: mô tả chi tiết từng việc phải làm",\n'
             f'    "req2: ...",\n'
-            f'  ],\n'
+            f"  ],\n"
             f'  "affected_files": [\n'
             f'    "relative/path/to/file1.ts",\n'
             f'    "relative/path/to/file2.ts",\n'
-            f'  ],\n'
+            f"  ],\n"
             f'  "requires_tenancy": true | false,\n'
             f'  "complexity": "SIMPLE|MEDIUM|COMPLEX"\n'
             f"}}\n"
@@ -285,16 +285,34 @@ class ScoutCoordinator:
 
         # Heuristic: поиск строк, похожих на задачи/требования
         requirements = []
-        lines = spec_content.split('\n')
+        lines = spec_content.split("\n")
         for line in lines:
             line = line.strip()
             # Ищем строки, начинающиеся с маркеров списка или содержащие ключевые слова действий
-            if (line.startswith('- ') or line.startswith('* ') or
-                line.startswith('• ') or line.startswith('1. ') or
-                any(keyword in line.lower() for keyword in
-                   ['xoá', 'sửa', 'thêm', 'tạo', 'xóa', 'fix', 'remove', 'add', 'create', 'update', 'delete'])):
+            if (
+                line.startswith("- ")
+                or line.startswith("* ")
+                or line.startswith("• ")
+                or line.startswith("1. ")
+                or any(
+                    keyword in line.lower()
+                    for keyword in [
+                        "xoá",
+                        "sửa",
+                        "thêm",
+                        "tạo",
+                        "xóa",
+                        "fix",
+                        "remove",
+                        "add",
+                        "create",
+                        "update",
+                        "delete",
+                    ]
+                )
+            ):
                 if len(line) > 10:  # Фильтруем слишком короткие строки
-                    requirements.append(line.lstrip('-•*1234567890. '))
+                    requirements.append(line.lstrip("-•*1234567890. "))
 
         # Если ничего не найдено, создаем общую задачу на основе описания
         if not requirements and spec_content:
@@ -312,7 +330,7 @@ class ScoutCoordinator:
     # ── JSON Parse Helpers ──────────────────────────────────
 
     @staticmethod
-    def _try_parse_json_from_file(path: Path) -> Optional[Dict[str, Any]]:
+    def _try_parse_json_from_file(path: Path) -> dict[str, Any] | None:
         """Thử đọc JSON từ file. Trả về None nếu không đọc được."""
         if path.exists():
             try:
@@ -322,7 +340,7 @@ class ScoutCoordinator:
         return None
 
     @staticmethod
-    def _try_extract_json(text: str) -> Optional[Dict[str, Any]]:
+    def _try_extract_json(text: str) -> dict[str, Any] | None:
         """
         Trích xuất JSON object từ LLM stdout.
         Chiến lược:
@@ -341,9 +359,7 @@ class ScoutCoordinator:
             pass
 
         # Strategy 2: tìm fenced code block ```json ... ```
-        json_block_pattern = re.compile(
-            r"```(?:json)?\s*\n?(.*?)```", re.DOTALL
-        )
+        json_block_pattern = re.compile(r"```(?:json)?\s*\n?(.*?)```", re.DOTALL)
         for match in json_block_pattern.finditer(text):
             block = match.group(1).strip()
             try:
@@ -373,7 +389,7 @@ class ScoutCoordinator:
 
         return None
 
-    async def _empty_spec_summary(self) -> Dict[str, Any]:
+    async def _empty_spec_summary(self) -> dict[str, Any]:
         return {
             "scope_type": "MODIFY",
             "target_module": "",

@@ -6,26 +6,26 @@ của hệ thống tự động hóa và ra quyết định. Không phụ thuộ
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
 
 
 @dataclass
 class Task:
     """Thực thể đại diện cho một nhiệm vụ duy nhất trong hàng đợi"""
+
     task_id: str
     module: str
     title: str
     description: str
-    depends_on: List[str] = field(default_factory=list)
+    depends_on: list[str] = field(default_factory=list)
     status: str = "PENDING"
     level: int = 0
     result: dict = field(default_factory=dict)
 
-    def mark_success(self, result: Optional[dict] = None) -> None:
+    def mark_success(self, result: dict | None = None) -> None:
         self.status = "SUCCESS"
         self.result = result or {"success": True}
 
-    def mark_failed(self, result: Optional[dict] = None) -> None:
+    def mark_failed(self, result: dict | None = None) -> None:
         self.status = "FAILED"
         self.result = result or {"success": False}
 
@@ -33,7 +33,7 @@ class Task:
         self.status = "PENDING"
         self.result = {}
 
-    def mark_skipped(self, result: Optional[dict] = None) -> None:
+    def mark_skipped(self, result: dict | None = None) -> None:
         self.status = "SKIPPED"
         self.result = result or {"skipped": True}
 
@@ -41,32 +41,32 @@ class Task:
 @dataclass
 class ErrorClassification:
     """Định nghĩa kết quả phân loại lỗi từ LLM Classifier"""
-    error_type: str        # COMPILE | ARCH | TEST | LOGIC | UNKNOWN
-    root_cause: str        # Mô tả ngắn nguyên nhân gốc rễ
-    recovery_strategy: str # PATCH_IMPORTS | MOVE_LAYER | FIX_MOCKS | REGEN_LOGIC | SKIP | UNKNOWN
-    confidence: float      # Độ tự tin từ 0.0..1.0
-    context_for_coder: str # Phản hồi/hướng dẫn cụ thể dành cho Coder Agent ở lượt tiếp theo
-    can_skip: bool = False # Có thể bỏ qua task này nếu liên tục thất bại không
-    suggest_split: bool = False # Có gợi ý chia nhỏ nhiệm vụ này không
 
+    error_type: str  # COMPILE | ARCH | TEST | LOGIC | UNKNOWN
+    root_cause: str  # Mô tả ngắn nguyên nhân gốc rễ
+    recovery_strategy: str  # PATCH_IMPORTS | MOVE_LAYER | FIX_MOCKS | REGEN_LOGIC | SKIP | UNKNOWN
+    confidence: float  # Độ tự tin từ 0.0..1.0
+    context_for_coder: str  # Phản hồi/hướng dẫn cụ thể dành cho Coder Agent ở lượt tiếp theo
+    can_skip: bool = False  # Có thể bỏ qua task này nếu liên tục thất bại không
+    suggest_split: bool = False  # Có gợi ý chia nhỏ nhiệm vụ này không
 
 
 class Workflow:
     """Domain Entity quản lý đồ thị phụ thuộc DAG của các tasks (Topological Sort)"""
 
-    def __init__(self, tasks: Dict[str, Task]):
+    def __init__(self, tasks: dict[str, Task]):
         self.tasks = tasks
-        self.level_groups: Dict[int, List[Task]] = {}
+        self.level_groups: dict[int, list[Task]] = {}
 
-    def calculate_levels(self) -> Tuple[bool, Optional[str]]:
+    def calculate_levels(self) -> tuple[bool, str | None]:
         """
         Tính toán level cho mỗi task dựa trên dependency graph (Topological Sort).
         Trả về: (thành công, thông báo lỗi nếu có).
         """
         self.level_groups.clear()
-        
-        graph: Dict[str, List[str]] = {tid: [] for tid in self.tasks}
-        in_degree: Dict[str, int] = {tid: 0 for tid in self.tasks}
+
+        graph: dict[str, list[str]] = {tid: [] for tid in self.tasks}
+        in_degree: dict[str, int] = {tid: 0 for tid in self.tasks}
 
         for task in self.tasks.values():
             for dep in task.depends_on:
@@ -83,7 +83,7 @@ class Workflow:
             for tid in queue:
                 task = self.tasks[tid]
                 task.level = current_level
-                
+
                 if current_level not in self.level_groups:
                     self.level_groups[current_level] = []
                 self.level_groups[current_level].append(task)
@@ -103,16 +103,16 @@ class Workflow:
         # Phát hiện cycle và thực hiện phá vòng lặp (Cycle Breaking)
         cyclic = [tid for tid, deg in in_degree.items() if deg > 0]
         err_msg = f"Phát hiện vòng lặp phụ thuộc vòng tròn giữa các tasks: {cyclic}"
-        
+
         # Thử phá vòng lặp bằng cách loại bỏ liên kết phụ thuộc vòng giữa các cyclic tasks
         max_attempts = len(cyclic) * 2
         attempt = 0
-        
+
         while processed != len(self.tasks) and attempt < max_attempts:
             attempt += 1
             in_degree = {tid: 0 for tid in self.tasks}
             graph = {tid: [] for tid in self.tasks}
-            
+
             for task in self.tasks.values():
                 for dep in task.depends_on:
                     if dep in self.tasks:
@@ -132,7 +132,7 @@ class Workflow:
                 for tid in queue:
                     task = self.tasks[tid]
                     task.level = current_level
-                    
+
                     if current_level not in self.level_groups:
                         self.level_groups[current_level] = []
                     self.level_groups[current_level].append(task)
@@ -149,14 +149,15 @@ class Workflow:
             cyclic = [tid for tid, deg in in_degree.items() if deg > 0]
 
         if processed == len(self.tasks):
-            return True, f"Đã phá vòng lặp thành công! Có điều chỉnh cấu trúc DAG."
-        
+            return True, "Đã phá vòng lặp thành công! Có điều chỉnh cấu trúc DAG."
+
         return False, err_msg
 
 
 @dataclass
 class DecisionRule:
     """Quy tắc hiến pháp dự án"""
+
     principle: str
     weight: float
     description: str = ""
@@ -165,23 +166,21 @@ class DecisionRule:
 @dataclass
 class ProposalOption:
     """Một phương án/đề xuất giải quyết từ AI Worker"""
+
     option_id: str
     title: str
     description: str
-    changed_files: List[str] = field(default_factory=list)
-    scores: Dict[str, float] = field(default_factory=dict)  # {"security": 90.0, ...}
+    changed_files: list[str] = field(default_factory=list)
+    scores: dict[str, float] = field(default_factory=dict)  # {"security": 90.0, ...}
 
 
 class DecisionEngine:
     """Quy tắc nghiệp vụ chấm điểm phương án dựa trên hiến pháp dự án (Weighted Score)"""
 
-    def __init__(self, rules: List[DecisionRule], authority_thresholds: Dict[str, float] = None):
+    def __init__(self, rules: list[DecisionRule], authority_thresholds: dict[str, float] = None):
         self.rules = rules
         # Mặc định: auto-execute > 85%, ask user 70%-85%, block/manual < 70%
-        self.thresholds = authority_thresholds or {
-            "auto_execute": 0.85,
-            "ask_user": 0.70
-        }
+        self.thresholds = authority_thresholds or {"auto_execute": 0.85, "ask_user": 0.70}
 
     def evaluate_option(self, option: ProposalOption) -> float:
         """Tính điểm weighted score cho một option"""
@@ -195,7 +194,7 @@ class DecisionEngine:
 
         return total_score / total_weight if total_weight > 0 else 0.0
 
-    def make_decision(self, options: List[ProposalOption]) -> Tuple[Optional[ProposalOption], float, str]:
+    def make_decision(self, options: list[ProposalOption]) -> tuple[ProposalOption | None, float, str]:
         """
         Đánh giá các options và đưa ra quyết định hành động.
         Trả về: (Option được chọn, Điểm tự tin, Hành động tiếp theo).
@@ -233,7 +232,9 @@ class DecisionEngine:
 
         return best_opt, confidence, action
 
-    def evaluate_violations(self, compile_passed: bool, compile_error: str, arch_passed: bool, violations: List[dict]) -> Tuple[float, List[str]]:
+    def evaluate_violations(
+        self, compile_passed: bool, compile_error: str, arch_passed: bool, violations: list[dict]
+    ) -> tuple[float, list[str]]:
         """
         Đánh giá chất lượng code dựa trên kết quả biên dịch và vi phạm kiến trúc.
         Trả về: (Điểm số chất lượng [0.0..100.0], Danh sách lý do/lỗi vi phạm).

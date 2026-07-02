@@ -8,47 +8,54 @@ Flow:
     ScoutReport → Task generation → Adaptive execution (Planner→Coder→Evaluator→Gatekeeper) → AutoFixer → Escalate.
 """
 
-import asyncio
-import json
 import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
+from kaos.application.ports import (
+    CachePort,
+    GatekeeperPort,
+    GitPort,
+    KnowledgeGraphPort,
+    LLMProviderPort,
+    NotificationPort,
+    StoragePort,
+)
+from kaos.application.use_cases.classify_error import ClassifyErrorUseCase
 from kaos.domain.scout_results import (
     ConflictType,
     ScoutReport,
     TaskBudget,
     TaskComplexity,
 )
-from kaos.domain.value_objects import AgentInstruction, ExecutionConfig
-from kaos.application.ports import CachePort, GatekeeperPort, LLMProviderPort, StoragePort, KnowledgeGraphPort, NotificationPort, GitPort
-from kaos.application.use_cases.classify_error import ClassifyErrorUseCase
-from kaos.config import PROJECT_ROOT
-from kaos.engine import TaskQueueEngine, FeedbackPolicy
+from kaos.domain.value_objects import ExecutionConfig
+from kaos.engine import FeedbackPolicy, TaskQueueEngine
 
 logger = logging.getLogger("KAOS_Harness")
 
 # ── Budget Constants ─────────────────────────────────────────────
 
-BUDGET_ESCALATE = 20          # turns when AutoFixer exhausts 3 attempts
+BUDGET_ESCALATE = 20  # turns when AutoFixer exhausts 3 attempts
 MAX_FIX_ATTEMPTS = 3
 FIX_TURNS_PER_ATTEMPT = 7
 
 
 # ── Data Classes ─────────────────────────────────────────────────
 
+
 @dataclass
 class ActTask:
     """One executable task derived from ScoutReport."""
+
     task_id: str
     title: str
     description: str
     complexity: TaskComplexity
     budget: TaskBudget
     module: str
-    depends_on: List[str] = field(default_factory=list)
+    depends_on: list[str] = field(default_factory=list)
     status: str = "PENDING"
     result: dict = field(default_factory=dict)
 
@@ -59,7 +66,7 @@ class ActTask:
         title: str,
         description: str,
         module: str,
-        complexity_hint: Optional[str] = None,
+        complexity_hint: str | None = None,
     ) -> "ActTask":
         """Factory: tạo ActTask với budget tự động từ mô tả."""
         effective_hint = complexity_hint or description
@@ -77,6 +84,7 @@ class ActTask:
 @dataclass
 class FixAttempt:
     """Record of one fix attempt in the feedback loop."""
+
     attempt_number: int
     error_message: str
     success: bool = False
@@ -85,17 +93,19 @@ class FixAttempt:
 @dataclass
 class TaskExecutionResult:
     """Result of executing one ActTask."""
+
     task_id: str
     success: bool
     attempts: int = 1
-    fix_attempts: List[FixAttempt] = field(default_factory=list)
+    fix_attempts: list[FixAttempt] = field(default_factory=list)
     escalated: bool = False
-    files_created: List[str] = field(default_factory=list)
-    files_modified: List[str] = field(default_factory=list)
+    files_created: list[str] = field(default_factory=list)
+    files_modified: list[str] = field(default_factory=list)
     error: str = ""
 
 
 # ── ActExecutor ──────────────────────────────────────────────────
+
 
 class ActExecutor:
     """
@@ -119,10 +129,10 @@ class ActExecutor:
         config: ExecutionConfig,
         tmp_dir: Path,
         target_path: str,
-        knowledge_graph: Optional[KnowledgeGraphPort] = None,
-        classify_error: Optional[ClassifyErrorUseCase] = None,
-        notification: Optional[NotificationPort] = None,
-        git: Optional[GitPort] = None,
+        knowledge_graph: KnowledgeGraphPort | None = None,
+        classify_error: ClassifyErrorUseCase | None = None,
+        notification: NotificationPort | None = None,
+        git: GitPort | None = None,
     ):
         self.llm_provider = llm_provider
         self.gatekeeper = gatekeeper
@@ -149,7 +159,7 @@ class ActExecutor:
         report: ScoutReport,
         parallel: int = 1,
         resume: bool = False,
-    ) -> List[TaskExecutionResult]:
+    ) -> list[TaskExecutionResult]:
         """
         Execute Act Phase từ ScoutReport.
         Delegates to TaskQueueEngine for task execution (Planner→Coder→Evaluator→Gatekeeper→AutoFixer→Escalate).
@@ -160,10 +170,7 @@ class ActExecutor:
         tasks = self._generate_tasks(report)
         logger.info(f"   📋 Generated {len(tasks)} tasks with adaptive budgets")
         for t in tasks:
-            logger.info(
-                f"      - [{t.complexity.value:8s}] {t.task_id}: "
-                f"{t.title} ({t.budget.max_turns} turns max)"
-            )
+            logger.info(f"      - [{t.complexity.value:8s}] {t.task_id}: {t.title} ({t.budget.max_turns} turns max)")
 
         # 2. Capture baseline compile errors (pre-existing)
         baseline_errors = await self._capture_baseline_errors()
@@ -200,7 +207,7 @@ class ActExecutor:
         await engine.run(parallel_workers=parallel, resume=resume)
 
         # 4. Map engine tasks → TaskExecutionResult list
-        results: List[TaskExecutionResult] = []
+        results: list[TaskExecutionResult] = []
         for t in engine.tasks.values():
             res = t.result if t.result else {}
             if hasattr(t, "budget") and t.budget:
@@ -211,35 +218,37 @@ class ActExecutor:
                 fix_attempts_list = []
                 for fa in res.get("fix_attempts", []):
                     if isinstance(fa, dict):
-                        fix_attempts_list.append(FixAttempt(
-                            attempt_number=fa.get("attempt_number", 0),
-                            error_message=fa.get("error_message", ""),
-                            success=fa.get("success", False),
-                        ))
+                        fix_attempts_list.append(
+                            FixAttempt(
+                                attempt_number=fa.get("attempt_number", 0),
+                                error_message=fa.get("error_message", ""),
+                                success=fa.get("success", False),
+                            )
+                        )
                     else:
                         fix_attempts_list.append(fa)
 
-            results.append(TaskExecutionResult(
-                task_id=t.task_id,
-                success=res.get("success", False),
-                attempts=res.get("attempts", 1),
-                fix_attempts=fix_attempts_list,
-                escalated=res.get("escalated", False),
-                files_created=res.get("files_created", []),
-                files_modified=res.get("files_modified", []),
-                error=res.get("error", ""),
-            ))
+            results.append(
+                TaskExecutionResult(
+                    task_id=t.task_id,
+                    success=res.get("success", False),
+                    attempts=res.get("attempts", 1),
+                    fix_attempts=fix_attempts_list,
+                    escalated=res.get("escalated", False),
+                    files_created=res.get("files_created", []),
+                    files_modified=res.get("files_modified", []),
+                    error=res.get("error", ""),
+                )
+            )
 
         # 5. Summary
         success_count = sum(1 for r in results if r.success)
-        logger.info(
-            f"   ✅ Act Phase complete: {success_count}/{len(results)} tasks passed"
-        )
+        logger.info(f"   ✅ Act Phase complete: {success_count}/{len(results)} tasks passed")
         return results
 
     # ── Task Generation ─────────────────────────────────────────
 
-    def _generate_tasks(self, report: ScoutReport) -> List[ActTask]:
+    def _generate_tasks(self, report: ScoutReport) -> list[ActTask]:
         """
         Sinh ActTask list từ ScoutReport.
 
@@ -251,7 +260,7 @@ class ActExecutor:
         - Spec requirements → FEAT tasks
         - Fallback: 1 task từ scope
         """
-        tasks: List[ActTask] = []
+        tasks: list[ActTask] = []
         counter = [0]
 
         def next_id(prefix: str = "ACT") -> str:
@@ -262,88 +271,102 @@ class ActExecutor:
 
         # ── Prioritize SPEC_ACTION conflicts first ──────────────
         spec_action_conflicts = [
-            c for c in report.conflict_points
+            c
+            for c in report.conflict_points
             if c.conflict_type in (ConflictType.SPEC_ACTION, ConflictType.SPEC_REQUIREMENT)
         ]
         for conflict in spec_action_conflicts:
             task_id = next_id("FIX" if conflict.severity.value in ("HIGH", "MEDIUM") else "FEAT")
-            tasks.append(ActTask.from_spec_and_schema(
-                task_id=task_id,
-                title=conflict.description[:80],
-                description=conflict.description,
-                module=module,
-                complexity_hint=conflict.description,
-            ))
+            tasks.append(
+                ActTask.from_spec_and_schema(
+                    task_id=task_id,
+                    title=conflict.description[:80],
+                    description=conflict.description,
+                    module=module,
+                    complexity_hint=conflict.description,
+                )
+            )
 
         # 1. HIGH conflicts → schema/tenancy fixes
         high_schema_conflicts = [
-            c for c in report.high_conflicts
+            c
+            for c in report.high_conflicts
             if c.conflict_type not in (ConflictType.SPEC_ACTION, ConflictType.SPEC_REQUIREMENT)
         ]
         for conflict in high_schema_conflicts:
             task_id = next_id("FIX")
-            tasks.append(ActTask.from_spec_and_schema(
-                task_id=task_id,
-                title=f"Fix {conflict.conflict_type.value}: {conflict.description[:60]}",
-                description=f"{conflict.description}\n\nSuggestion: {conflict.suggestion}",
-                module=module,
-                complexity_hint=conflict.description,
-            ))
+            tasks.append(
+                ActTask.from_spec_and_schema(
+                    task_id=task_id,
+                    title=f"Fix {conflict.conflict_type.value}: {conflict.description[:60]}",
+                    description=f"{conflict.description}\n\nSuggestion: {conflict.suggestion}",
+                    module=module,
+                    complexity_hint=conflict.description,
+                )
+            )
 
         # 2. MEDIUM conflicts (non-spec-action)
         med_schema_conflicts = [
-            c for c in report.medium_conflicts
+            c
+            for c in report.medium_conflicts
             if c.conflict_type not in (ConflictType.SPEC_ACTION, ConflictType.SPEC_REQUIREMENT)
         ]
         for conflict in med_schema_conflicts:
             task_id = next_id("FIX")
-            tasks.append(ActTask.from_spec_and_schema(
-                task_id=task_id,
-                title=f"Handle {conflict.conflict_type.value}: {conflict.description[:60]}",
-                description=f"{conflict.description}\n\nSuggestion: {conflict.suggestion}",
-                module=module,
-                complexity_hint=conflict.description,
-            ))
+            tasks.append(
+                ActTask.from_spec_and_schema(
+                    task_id=task_id,
+                    title=f"Handle {conflict.conflict_type.value}: {conflict.description[:60]}",
+                    description=f"{conflict.description}\n\nSuggestion: {conflict.suggestion}",
+                    module=module,
+                    complexity_hint=conflict.description,
+                )
+            )
 
         # 3. Module creation
         if report.is_new_module:
             task_id = next_id("INIT")
-            tasks.append(ActTask.from_spec_and_schema(
-                task_id=task_id,
-                title=f"Initialize module: {module}",
-                description=(
-                    f"Tạo module mới '{module}' theo chuẩn Clean Architecture: "
-                    f"domain entities, application use cases, "
-                    f"interfaces/controllers, infrastructure adapters."
-                ),
-                module=module,
-                complexity_hint="COMPLEX",
-            ))
+            tasks.append(
+                ActTask.from_spec_and_schema(
+                    task_id=task_id,
+                    title=f"Initialize module: {module}",
+                    description=(
+                        f"Tạo module mới '{module}' theo chuẩn Clean Architecture: "
+                        f"domain entities, application use cases, "
+                        f"interfaces/controllers, infrastructure adapters."
+                    ),
+                    module=module,
+                    complexity_hint="COMPLEX",
+                )
+            )
 
         # 4. Spec requirements (non-conflict) → feature tasks
         requirements = report.spec_summary.get("requirements", [])
         for req in requirements:
             task_id = next_id("FEAT")
-            tasks.append(ActTask.from_spec_and_schema(
-                task_id=task_id,
-                title=req[:80],
-                description=req,
-                module=module,
-            ))
+            tasks.append(
+                ActTask.from_spec_and_schema(
+                    task_id=task_id,
+                    title=req[:80],
+                    description=req,
+                    module=module,
+                )
+            )
 
         # 5. Fallback: 1 task từ report scope
         if not tasks:
             task_id = next_id("ACT")
-            tasks.append(ActTask.from_spec_and_schema(
-                task_id=task_id,
-                title=f"Implement {report.scope_type} for module {module}",
-                description=(
-                    f"Implement feature based on ScoutReport. "
-                    f"Scope: {report.scope_type}, Module: {module}"
-                ),
-                module=module,
-                complexity_hint=report.spec_summary.get("complexity", "MEDIUM"),
-            ))
+            tasks.append(
+                ActTask.from_spec_and_schema(
+                    task_id=task_id,
+                    title=f"Implement {report.scope_type} for module {module}",
+                    description=(
+                        f"Implement feature based on ScoutReport. Scope: {report.scope_type}, Module: {module}"
+                    ),
+                    module=module,
+                    complexity_hint=report.spec_summary.get("complexity", "MEDIUM"),
+                )
+            )
 
         # Gán dependencies: FIX tasks chạy trước, FEAT phụ thuộc vào FIX
         fix_ids = [t.task_id for t in tasks if t.task_id.startswith("FIX")]
@@ -358,7 +381,7 @@ class ActExecutor:
 
     # ── Baseline Error Capture ───────────────────────────────
 
-    async def _capture_baseline_errors(self) -> Optional[Dict[str, Any]]:
+    async def _capture_baseline_errors(self) -> dict[str, Any] | None:
         """
         Chạy compile check trước khi Act Phase bắt đầu.
         Lưu kết quả baseline để sau này filter pre-existing errors.
@@ -374,7 +397,7 @@ class ActExecutor:
                 for line in errors_str.split("\n"):
                     line = line.strip()
                     if line and ("error TS" in line or "Cannot find" in line or "is not a module" in line):
-                        normalized = re.sub(r'\(\d+,\d+\)', '', line).strip()
+                        normalized = re.sub(r"\(\d+,\d+\)", "", line).strip()
                         error_lines.add(normalized)
 
             baseline = {
@@ -392,8 +415,8 @@ class ActExecutor:
     @staticmethod
     def _is_new_error(
         compile_errors_str: str,
-        baseline: Optional[Dict[str, Any]],
-    ) -> Tuple[bool, str]:
+        baseline: dict[str, Any] | None,
+    ) -> tuple[bool, str]:
         """
         So sánh compile errors với baseline.
         Chỉ trả về True nếu có lỗi MỚI (không có trong baseline).
@@ -409,7 +432,7 @@ class ActExecutor:
             line = line.strip()
             if not line:
                 continue
-            normalized = re.sub(r'\(\d+,\d+\)', '', line).strip()
+            normalized = re.sub(r"\(\d+,\d+\)", "", line).strip()
             if normalized not in baseline_lines:
                 new_lines.append(line)
         if new_lines:

@@ -36,10 +36,7 @@ import json
 import logging
 import os
 import sys
-import time
 from pathlib import Path
-from typing import Optional
-
 
 # ─── Logging Setup ────────────────────────────────────────────────────────────
 
@@ -53,6 +50,7 @@ logger = logging.getLogger("AntigravityWatcher")
 KAOS_ROOT = Path(__file__).resolve().parent.parent.parent.parent  # project root
 SKILLS_DIR = KAOS_ROOT / "skills"
 
+
 def load_skill(skill_name: str) -> str:
     """Load nội dung skill prompt từ skills/ directory."""
     skill_file = SKILLS_DIR / f"{skill_name}.md"
@@ -65,6 +63,7 @@ def load_skill(skill_name: str) -> str:
 
 
 # ─── Instruction Builder ───────────────────────────────────────────────────────
+
 
 def build_instruction(input_data: dict) -> str:
     """
@@ -104,27 +103,30 @@ def build_instruction(input_data: dict) -> str:
 
 # ─── LLM Runners ──────────────────────────────────────────────────────────────
 
+
 async def run_with_goose(
     instruction: str,
     target_path: str,
     timeout: float,
 ) -> tuple[int, str]:
     """Chạy task bằng Goose CLI."""
-    import subprocess
     env = os.environ.copy()
     env["PWD"] = target_path
     try:
         proc = await asyncio.create_subprocess_exec(
-            "goose", "run", "--max-turns", "80", "--text", instruction,
+            "goose",
+            "run",
+            "--max-turns",
+            "80",
+            "--text",
+            instruction,
             cwd=target_path,
             env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout
-            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             return proc.returncode or 0, (stderr or b"").decode("utf-8", errors="replace")
         except asyncio.TimeoutError:
             proc.kill()
@@ -134,6 +136,7 @@ async def run_with_goose(
 
 
 # ─── Task Processor ───────────────────────────────────────────────────────────
+
 
 async def process_task(
     task_id: str,
@@ -208,6 +211,7 @@ async def process_task(
 
 # ─── Watcher Main Loop ────────────────────────────────────────────────────────
 
+
 async def watch_loop(
     handshake_dir: Path,
     runner: str,
@@ -253,10 +257,9 @@ async def watch_loop(
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────
 
+
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Antigravity Watcher — KAOS handshake directory daemon"
-    )
+    parser = argparse.ArgumentParser(description="Antigravity Watcher — KAOS handshake directory daemon")
     parser.add_argument(
         "--handshake-dir",
         required=True,

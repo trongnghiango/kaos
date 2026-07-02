@@ -5,11 +5,11 @@ Adapted from STAX_ASP/tools/autoresearch/python/executor_facade.py.
 Manages running shell commands safely — either natively or inside Docker sandbox.
 Generic paths for any target codebase.
 """
-import subprocess
-import os
-import sys
-import time
+
 import fcntl
+import os
+import subprocess
+import time
 
 from kaos.config import TARGET_PATH, logger
 
@@ -39,10 +39,7 @@ def run_command(cmd_list: list, cwd=None, env=None, capture_output=False, timeou
             translated_cmd.append(arg_str)
 
         cmd_str = " ".join(translated_cmd)
-        docker_cmd = [
-            "docker", "exec", "-w", "/app",
-            "stax_ai_sandbox", "bash", "-c", cmd_str
-        ]
+        docker_cmd = ["docker", "exec", "-w", "/app", "stax_ai_sandbox", "bash", "-c", cmd_str]
 
         logger.info(f"[Sandbox] Executing: {cmd_str[:80]}...")
         if capture_output:
@@ -78,6 +75,7 @@ def run_command(cmd_list: list, cwd=None, env=None, capture_output=False, timeou
                 returncode = process.returncode
                 stdout = ""
                 stderr = ""
+
             return MockResult()
     else:
         # Host native execution
@@ -116,7 +114,7 @@ def run_command(cmd_list: list, cwd=None, env=None, capture_output=False, timeou
                             logger.debug(f"[Host stdout] {line.strip()}")
                         else:
                             time.sleep(0.05)
-                    except (IOError, ValueError):
+                    except (OSError, ValueError):
                         time.sleep(0.05)
             except Exception as e:
                 process.kill()
@@ -128,4 +126,5 @@ def run_command(cmd_list: list, cwd=None, env=None, capture_output=False, timeou
                 returncode = process.returncode
                 stdout = ""
                 stderr = ""
+
             return MockResult()

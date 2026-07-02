@@ -1,5 +1,5 @@
-import sys
 import os
+import sys
 from pathlib import Path
 
 # Extract --target-path at the earliest stage to set KAOS_TARGET_PATH env var before config loads
@@ -15,9 +15,17 @@ for i, arg in enumerate(sys.argv):
 if target_path:
     os.environ["KAOS_TARGET_PATH"] = str(Path(target_path).resolve())
 
-from .domain import Task, Workflow, DecisionRule, ProposalOption, DecisionEngine, TaskStatus, SessionMetadata, ExecutionConfig
-from .application import GitPort, StoragePort, GatekeeperPort, LLMProviderPort
-
+from .application import GatekeeperPort, GitPort, LLMProviderPort, StoragePort
+from .domain import (
+    DecisionEngine,
+    DecisionRule,
+    ExecutionConfig,
+    ProposalOption,
+    SessionMetadata,
+    Task,
+    TaskStatus,
+    Workflow,
+)
 
 __all__ = [
     # Domain

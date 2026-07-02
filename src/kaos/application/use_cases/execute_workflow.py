@@ -8,13 +8,12 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
-from kaos.domain.models import Task, Workflow, DecisionEngine, DecisionRule
-from kaos.domain.value_objects import ExecutionConfig, SessionMetadata, AgentInstruction
-from kaos.application.ports import GitPort, StoragePort, GatekeeperPort, LLMProviderPort, NotificationPort
+from kaos.application.ports import GatekeeperPort, GitPort, LLMProviderPort, NotificationPort, StoragePort
 from kaos.application.use_cases.classify_error import ClassifyErrorUseCase
-from kaos.config import Prompts, TMP_DIR, PROJECT_ROOT
+from kaos.config import PROJECT_ROOT, TMP_DIR, Prompts
+from kaos.domain.models import DecisionEngine, DecisionRule, Task, Workflow
+from kaos.domain.value_objects import AgentInstruction, ExecutionConfig, SessionMetadata
 
 logger = logging.getLogger("STAX_Harness")
 
@@ -30,10 +29,10 @@ class ExecuteWorkflowUseCase:
         llm_provider: LLMProviderPort,
         config: ExecutionConfig,
         session_meta: SessionMetadata,
-        decision_engine: Optional[DecisionEngine] = None,
-        tmp_dir: Optional[Path] = None,
-        classify_error: Optional[ClassifyErrorUseCase] = None,
-        notification: Optional[NotificationPort] = None,
+        decision_engine: DecisionEngine | None = None,
+        tmp_dir: Path | None = None,
+        classify_error: ClassifyErrorUseCase | None = None,
+        notification: NotificationPort | None = None,
     ):
         self.git = git
         self.storage = storage
@@ -41,13 +40,10 @@ class ExecuteWorkflowUseCase:
         self.llm_provider = llm_provider
         self.config = config
         self.session_meta = session_meta
-        self.workflow: Optional[Workflow] = None
+        self.workflow: Workflow | None = None
         self.tmp_dir = tmp_dir or TMP_DIR
         self.classify_error = classify_error or ClassifyErrorUseCase(
-            llm_provider=self.llm_provider,
-            storage=self.storage,
-            config=self.config,
-            tmp_dir=self.tmp_dir
+            llm_provider=self.llm_provider, storage=self.storage, config=self.config, tmp_dir=self.tmp_dir
         )
         self.notification = notification
 
@@ -62,7 +58,7 @@ class ExecuteWorkflowUseCase:
             self.decision_engine = decision_engine
 
     async def execute(self, csv_path: Path, resume: bool = False, rerun_failed: bool = False) -> bool:
-        logger.info(f"\n🚀 [KAOS] Bắt đầu thực thi Task Queue Workflow...")
+        logger.info("\n🚀 [KAOS] Bắt đầu thực thi Task Queue Workflow...")
 
         # 1. Chuẩn bị nhánh Git cách ly
         await self._prepare_git_branch(resume)
@@ -111,13 +107,12 @@ class ExecuteWorkflowUseCase:
             await self._cleanup_git_branch(success=False, csv_path=csv_path)
             return False
 
-    async def _execute_level_tasks(self, level: int, tasks: List[Task], csv_path: Path) -> bool:
+    async def _execute_level_tasks(self, level: int, tasks: list[Task], csv_path: Path) -> bool:
         logger.info(f"\n⚡ [KAOS] Level {level}: Đang chạy {len(tasks)} tasks...")
 
         # Gọi thực thi song song
         results = await asyncio.gather(
-            *[self._execute_single_task(task, csv_path) for task in tasks],
-            return_exceptions=True
+            *[self._execute_single_task(task, csv_path) for task in tasks], return_exceptions=True
         )
 
         all_passed = True
@@ -138,7 +133,7 @@ class ExecuteWorkflowUseCase:
         raw_error: str,
         attempts: int,
         max_retries: int,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """
         Xử lý khi một lượt thử nghiệm thất bại: lưu lịch sử lỗi, gọi LLM Classifier phân loại,
         và trả về (should_continue_pipeline, new_feedback_msg).
@@ -152,11 +147,13 @@ class ExecuteWorkflowUseCase:
                 pass
 
         # Thêm lỗi hiện tại vào lịch sử
-        history.append({
-            "attempt": attempts,
-            "stage": failed_stage,
-            "error": raw_error,
-        })
+        history.append(
+            {
+                "attempt": attempts,
+                "stage": failed_stage,
+                "error": raw_error,
+            }
+        )
         self.storage.write_json(history_file, history)
 
         # Gọi Classifier phân loại
@@ -169,11 +166,15 @@ class ExecuteWorkflowUseCase:
         )
 
         if classification.suggest_split:
-            logger.warning(f"   ⚠️ [Error Classifier] Gợi ý chia nhỏ task '{task.task_id}' do độ phức tạp cao hoặc lặp lỗi. (Tính năng này chưa được kích hoạt, bỏ qua).")
+            logger.warning(
+                f"   ⚠️ [Error Classifier] Gợi ý chia nhỏ task '{task.task_id}' do độ phức tạp cao hoặc lặp lỗi. (Tính năng này chưa được kích hoạt, bỏ qua)."
+            )
 
         # Cơ chế skip
         if classification.can_skip and attempts >= max_retries // 2:
-            logger.info(f"   ⏭️ [Error Classifier] Đã kích hoạt SKIP cho task '{task.task_id}'. Điểm tự tin: {classification.confidence}")
+            logger.info(
+                f"   ⏭️ [Error Classifier] Đã kích hoạt SKIP cho task '{task.task_id}'. Điểm tự tin: {classification.confidence}"
+            )
             task.mark_skipped({"reason": classification.root_cause, "error": raw_error})
             return True, ""
 
@@ -208,7 +209,9 @@ class ExecuteWorkflowUseCase:
         while attempts < max_retries and not success:
             attempts += 1
             if attempts > 1:
-                logger.info(f"   🔄 [Auto-Heal] Đang thử lại (Retry {attempts}/{max_retries}) cho task {task.task_id}...")
+                logger.info(
+                    f"   🔄 [Auto-Heal] Đang thử lại (Retry {attempts}/{max_retries}) cho task {task.task_id}..."
+                )
 
             # --- A. PLANNER AGENT ---
             plan_file = self.tmp_dir / f"plan_{task.task_id}.json"
@@ -216,10 +219,11 @@ class ExecuteWorkflowUseCase:
             if attempts == 1:
                 logger.info(f"   🧭 [Planner] Đang lập kế hoạch tác chiến clean code cho {task.task_id}...")
                 plan_instruction = Prompts.PLANNER.format(
-                    ctx_file_path=task_ctx_file.resolve(),
-                    plan_file_path=plan_file.resolve()
+                    ctx_file_path=task_ctx_file.resolve(), plan_file_path=plan_file.resolve()
                 )
-                await self.llm_provider.run_agent(AgentInstruction.from_raw(plan_instruction, timeout=float(self.config.timeout_secs_planner)))
+                await self.llm_provider.run_agent(
+                    AgentInstruction.from_raw(plan_instruction, timeout=float(self.config.timeout_secs_planner))
+                )
 
             if self.storage.file_exists(plan_file):
                 try:
@@ -231,17 +235,21 @@ class ExecuteWorkflowUseCase:
             # --- B. CODER AGENT ---
             coder_out_file = self.tmp_dir / f"goose_out_{task.task_id}.json"
             coder_instruction = Prompts.CODER.format(
-                skill_file_path=str((PROJECT_ROOT / 'skills' / skill_file).resolve()),
+                skill_file_path=str((PROJECT_ROOT / "skills" / skill_file).resolve()),
                 ctx_file_path=task_ctx_file.resolve(),
                 tactical_plan=tactical_plan,
-                output_file_path=coder_out_file.resolve()
+                output_file_path=coder_out_file.resolve(),
             )
 
             if feedback_msg:
-                coder_instruction += f"\n\nLƯU Ý: Lần code trước bị lỗi, hãy khắc phục các phản hồi sau:\n{feedback_msg}"
+                coder_instruction += (
+                    f"\n\nLƯU Ý: Lần code trước bị lỗi, hãy khắc phục các phản hồi sau:\n{feedback_msg}"
+                )
 
-            logger.info(f"   🦆 [Coder] Đang gọi Coder Agent...")
-            exit_code, _ = await self.llm_provider.run_agent(AgentInstruction.from_raw(coder_instruction, timeout=float(self.config.timeout_secs_coder)))
+            logger.info("   🦆 [Coder] Đang gọi Coder Agent...")
+            exit_code, _ = await self.llm_provider.run_agent(
+                AgentInstruction.from_raw(coder_instruction, timeout=float(self.config.timeout_secs_coder))
+            )
 
             if exit_code != 0:
                 raw_err = f"Coder Agent Runtime Error (Exit code: {exit_code})."
@@ -253,7 +261,7 @@ class ExecuteWorkflowUseCase:
                 continue
 
             # --- C. EVALUATOR AGENT ---
-            logger.info(f"   🔍 [Evaluator] Đang chạy đánh giá nghiệp vụ...")
+            logger.info("   🔍 [Evaluator] Đang chạy đánh giá nghiệp vụ...")
             changed_files = []
             if self.storage.file_exists(coder_out_file):
                 try:
@@ -274,10 +282,11 @@ class ExecuteWorkflowUseCase:
 
             eval_out_file = self.tmp_dir / f"goose_out_eval_{task.task_id}.json"
             eval_instruction = Prompts.EVALUATOR.format(
-                eval_ctx_file_path=eval_ctx_file.resolve(),
-                eval_out_file_path=eval_out_file.resolve()
+                eval_ctx_file_path=eval_ctx_file.resolve(), eval_out_file_path=eval_out_file.resolve()
             )
-            await self.llm_provider.run_agent(AgentInstruction.from_raw(eval_instruction, timeout=float(self.config.timeout_secs_planner)))
+            await self.llm_provider.run_agent(
+                AgentInstruction.from_raw(eval_instruction, timeout=float(self.config.timeout_secs_planner))
+            )
 
             verdict = "PASS"
             eval_issues = []
@@ -307,11 +316,11 @@ class ExecuteWorkflowUseCase:
                 continue
 
             # --- D. GATEKEEPER COMPILER & TEST ---
-            logger.info(f"   🛡️  [Gatekeeper] Biên dịch code (tsc --noEmit)...")
+            logger.info("   🛡️  [Gatekeeper] Biên dịch code (tsc --noEmit)...")
             compile_passed, compile_err = await self.gatekeeper.compile_check(task.module, task.task_id)
 
             if not compile_passed:
-                logger.warning(f"      ❌ Lỗi biên dịch TypeScript!")
+                logger.warning("      ❌ Lỗi biên dịch TypeScript!")
                 raw_err = f"[GATEKEEPER] TypeScript Compilation FAILED.\nChi tiết lỗi:\n{compile_err}"
                 should_skip, feedback_msg = await self._handle_attempt_failure(
                     task, "compile", raw_err, attempts, max_retries
@@ -321,18 +330,15 @@ class ExecuteWorkflowUseCase:
                 continue
 
             # --- E. ARCHITECTURE BOUNDARY CHECK (Chặng 2 - AST + DecisionEngine) ---
-            logger.info(f"   🏗️  [Architecture Check] Kiểm tra quy tắc kiến trúc...")
+            logger.info("   🏗️  [Architecture Check] Kiểm tra quy tắc kiến trúc...")
             arch_passed, arch_violations = await self.gatekeeper.check_architecture(
                 file_paths=[],  # TS Bridge tự detect files đã thay đổi
-                task_id=task.task_id
+                task_id=task.task_id,
             )
 
             # Đánh giá mức độ vi phạm bằng DecisionEngine
             diag_score, diag_reasons = self.decision_engine.evaluate_violations(
-                compile_passed=True,
-                compile_error="",
-                arch_passed=arch_passed,
-                violations=arch_violations
+                compile_passed=True, compile_error="", arch_passed=arch_passed, violations=arch_violations
             )
 
             if not arch_passed:
@@ -351,7 +357,7 @@ class ExecuteWorkflowUseCase:
             tests_passed, tests_err = await self.gatekeeper.run_tests(task.module, task.task_id)
 
             if not tests_passed:
-                logger.warning(f"      ❌ Test Suite thất bại!")
+                logger.warning("      ❌ Test Suite thất bại!")
                 raw_err = f"[GATEKEEPER] Test Suite FAILED.\nChi tiết lỗi:\n{tests_err}"
                 should_skip, feedback_msg = await self._handle_attempt_failure(
                     task, "test", raw_err, attempts, max_retries
@@ -386,7 +392,7 @@ class ExecuteWorkflowUseCase:
             return "cli-review.md"
         return "cli-backend.md"
 
-    def _format_evaluator_issues(self, issues: List[dict]) -> str:
+    def _format_evaluator_issues(self, issues: list[dict]) -> str:
         lines = ["[EVALUATOR] Yêu cầu Rework:"]
         for issue in issues:
             lines.append(f"- [{issue.get('severity', 'INFO')}] {issue.get('field', '')}: {issue.get('message', '')}")
@@ -430,7 +436,9 @@ class ExecuteWorkflowUseCase:
                 await self.git.checkout("main")
                 logger.info("   ✅ Đã checkout về main.")
             except Exception as e:
-                logger.error(f"❌ Không thể checkout về main: {e}. Workspace có thể bị kẹt ở nhánh {branch}. Bỏ qua khôi phục stash để tránh corrupt.")
+                logger.error(
+                    f"❌ Không thể checkout về main: {e}. Workspace có thể bị kẹt ở nhánh {branch}. Bỏ qua khôi phục stash để tránh corrupt."
+                )
                 return
 
             try:

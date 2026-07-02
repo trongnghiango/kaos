@@ -1,6 +1,7 @@
 """
 FeedbackPolicy — configuration for the AutoFixer feedback loop.
 """
+
 from dataclasses import dataclass
 
 

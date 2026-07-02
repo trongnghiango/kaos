@@ -7,13 +7,14 @@ bằng black + ruff (linter) trước khi báo cáo hoặc commit.
 
 Cách dùng:
   python3 check_python.py [<path> ...]
-  
+
   Nếu không truyền path, quét tất cả file .py trong thư mục hiện tại.
   Nếu truyền path, chỉ quét các file/thư mục đó.
 
 Kết quả trả về JSON:
   {"success": true/false, "files_checked": N, "errors": [...], "warnings": [...]}
 """
+
 import json
 import subprocess
 import sys
@@ -65,14 +66,16 @@ def lint_with_ruff(file_path: Path) -> list[dict]:
             issues = json.loads(result.stdout)
             warnings = []
             for issue in issues:
-                warnings.append({
-                    "file": issue.get("filename", str(file_path)),
-                    "type": "lint",
-                    "line": issue.get("location", {}).get("row", 0),
-                    "column": issue.get("location", {}).get("column", 0),
-                    "code": issue.get("code", ""),
-                    "message": issue.get("message", ""),
-                })
+                warnings.append(
+                    {
+                        "file": issue.get("filename", str(file_path)),
+                        "type": "lint",
+                        "line": issue.get("location", {}).get("row", 0),
+                        "column": issue.get("location", {}).get("column", 0),
+                        "code": issue.get("code", ""),
+                        "message": issue.get("message", ""),
+                    }
+                )
             return warnings
         except json.JSONDecodeError:
             return [{"file": str(file_path), "type": "lint_error", "message": result.stderr.strip()}]

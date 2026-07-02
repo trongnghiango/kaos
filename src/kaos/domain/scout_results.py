@@ -7,14 +7,15 @@ Không phụ thuộc vào bất kỳ framework hay thư viện ngoài nào.
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class ConflictType(str, Enum):
     """Loại xung đột giữa raw data / spec với codebase hiện tại"""
+
     SCHEMA_MISMATCH = "SCHEMA_MISMATCH"
     SPEC_MISMATCH = "SPEC_MISMATCH"
-    SPEC_ACTION = "SPEC_ACTION"    # Explicit action được liệt kê trong spec
+    SPEC_ACTION = "SPEC_ACTION"  # Explicit action được liệt kê trong spec
     SPEC_REQUIREMENT = "SPEC_REQUIREMENT"  # Yêu cầu cụ thể từ spec cần thực hiện
     TENANCY_ISSUE = "TENANCY_ISSUE"
     TYPE_MISMATCH = "TYPE_MISMATCH"
@@ -24,6 +25,7 @@ class ConflictType(str, Enum):
 
 class ConflictSeverity(str, Enum):
     """Mức độ nghiêm trọng của xung đột"""
+
     HIGH = "HIGH"
     MEDIUM = "MEDIUM"
     LOW = "LOW"
@@ -32,6 +34,7 @@ class ConflictSeverity(str, Enum):
 
 class TaskComplexity(str, Enum):
     """Mức độ phức tạp của task — dùng để gán budget turns"""
+
     SIMPLE = "SIMPLE"
     MEDIUM = "MEDIUM"
     COMPLEX = "COMPLEX"
@@ -43,6 +46,7 @@ class ConflictPoint:
     Value Object: Một điểm xung đột / không tương thích được phát hiện.
     Bất biến (frozen) — không thể sửa sau khi tạo.
     """
+
     conflict_type: ConflictType
     severity: ConflictSeverity
     description: str
@@ -57,25 +61,26 @@ class ScoutReport:
     Entity: Báo cáo tổng hợp từ Scout Phase.
     Đây là kết quả đầu ra của ScoutCoordinator, đầu vào của DecisionEngine.
     """
+
     module: str
     confidence: float
-    schema_summary: Dict[str, Any] = field(default_factory=dict)
-    raw_data_summary: Dict[str, Any] = field(default_factory=dict)
-    spec_summary: Dict[str, Any] = field(default_factory=dict)
-    conflict_points: List[ConflictPoint] = field(default_factory=list)
+    schema_summary: dict[str, Any] = field(default_factory=dict)
+    raw_data_summary: dict[str, Any] = field(default_factory=dict)
+    spec_summary: dict[str, Any] = field(default_factory=dict)
+    conflict_points: list[ConflictPoint] = field(default_factory=list)
     compatibility_score: float = 0.0
     scope_type: str = "MODIFY"  # NEW_FEATURE | MODIFY | OPTIMIZE
     is_new_module: bool = False
     reasoning: str = ""
     # New field: explicit file actions parsed from the spec
-    file_actions: List[Dict[str, Any]] = field(default_factory=list)
+    file_actions: list[dict[str, Any]] = field(default_factory=list)
 
     @property
-    def high_conflicts(self) -> List[ConflictPoint]:
+    def high_conflicts(self) -> list[ConflictPoint]:
         return [c for c in self.conflict_points if c.severity == ConflictSeverity.HIGH]
 
     @property
-    def medium_conflicts(self) -> List[ConflictPoint]:
+    def medium_conflicts(self) -> list[ConflictPoint]:
         return [c for c in self.conflict_points if c.severity == ConflictSeverity.MEDIUM]
 
     @property
@@ -97,6 +102,7 @@ class TaskBudget:
     Value Object: Budget (turns & timeout) cho một task trong Act Phase.
     Được gán bởi ActExecutor dựa trên độ phức tạp của task.
     """
+
     task_id: str
     complexity: TaskComplexity
     max_turns: int
@@ -137,12 +143,26 @@ class TaskBudget:
         """
         desc_lower = description.lower()
         triggers_complex = [
-            "migration", "entity", "aggregate", "workflow", "multi-step",
-            "multi-tenancy", "rbac", "permission", "module mới",
+            "migration",
+            "entity",
+            "aggregate",
+            "workflow",
+            "multi-step",
+            "multi-tenancy",
+            "rbac",
+            "permission",
+            "module mới",
         ]
         triggers_medium = [
-            "api", "service", "controller", "dto", "schema",
-            "repository", "validator", "pipe", "guard",
+            "api",
+            "service",
+            "controller",
+            "dto",
+            "schema",
+            "repository",
+            "validator",
+            "pipe",
+            "guard",
         ]
 
         has_complex = any(t in desc_lower for t in triggers_complex)

@@ -6,12 +6,11 @@ Phân loại lỗi bằng LLM Classifier để đưa ra chiến lược khắc p
 
 import logging
 from pathlib import Path
-from typing import List, Optional
 
-from kaos.domain.models import Task, ErrorClassification
-from kaos.domain.value_objects import ExecutionConfig, AgentInstruction
-from kaos.application.ports import StoragePort, LLMProviderPort
-from kaos.config import Prompts, TMP_DIR, PROJECT_ROOT
+from kaos.application.ports import LLMProviderPort, StoragePort
+from kaos.config import PROJECT_ROOT, TMP_DIR, Prompts
+from kaos.domain.models import ErrorClassification, Task
+from kaos.domain.value_objects import AgentInstruction, ExecutionConfig
 
 logger = logging.getLogger("STAX_Harness")
 
@@ -24,7 +23,7 @@ class ClassifyErrorUseCase:
         llm_provider: LLMProviderPort,
         storage: StoragePort,
         config: ExecutionConfig,
-        tmp_dir: Optional[Path] = None,
+        tmp_dir: Path | None = None,
     ):
         self.llm_provider = llm_provider
         self.storage = storage
@@ -37,7 +36,7 @@ class ClassifyErrorUseCase:
         error_stage: str,
         error_message: str,
         attempt_number: int,
-        previous_attempts: List[dict],
+        previous_attempts: list[dict],
     ) -> ErrorClassification:
         logger.info(f"🧠 [Error Classifier] Đang phân tích lỗi tại chặng '{error_stage}'...")
 
@@ -57,14 +56,18 @@ class ClassifyErrorUseCase:
 
         skill_file = "cli-error-classifier.md"
         instruction = Prompts.ERROR_CLASSIFIER.format(
-            skill_file_path=str((PROJECT_ROOT / 'skills' / skill_file).resolve()),
+            skill_file_path=str((PROJECT_ROOT / "skills" / skill_file).resolve()),
             ctx_file_path=ctx_file.resolve(),
             output_file_path=out_file.resolve(),
         )
 
         # Sử dụng cấu hình timeout_secs_gatekeeper động thay vì hardcode 45.0s
-        timeout_val = float(self.config.timeout_secs_gatekeeper) if hasattr(self.config, 'timeout_secs_gatekeeper') else 120.0
-        exit_code, out_logs = await self.llm_provider.run_agent(AgentInstruction.from_raw(instruction, timeout=timeout_val))
+        timeout_val = (
+            float(self.config.timeout_secs_gatekeeper) if hasattr(self.config, "timeout_secs_gatekeeper") else 120.0
+        )
+        exit_code, out_logs = await self.llm_provider.run_agent(
+            AgentInstruction.from_raw(instruction, timeout=timeout_val)
+        )
 
         # Fallback values if LLM fails
         default_classification = ErrorClassification(
@@ -74,7 +77,7 @@ class ClassifyErrorUseCase:
             confidence=0.0,
             context_for_coder=f"Lỗi xảy ra tại chặng {error_stage}: {error_message}",
             can_skip=False,
-            suggest_split=False
+            suggest_split=False,
         )
 
         if exit_code != 0 or not self.storage.file_exists(out_file):
@@ -92,7 +95,9 @@ class ClassifyErrorUseCase:
                 can_skip=bool(result.get("can_skip", False)),
                 suggest_split=bool(result.get("suggest_split", False)),
             )
-            logger.info(f"✅ [Error Classifier] Lỗi: Type={classification.error_type}, Chiến lược={classification.recovery_strategy} (Tự tin: {classification.confidence})")
+            logger.info(
+                f"✅ [Error Classifier] Lỗi: Type={classification.error_type}, Chiến lược={classification.recovery_strategy} (Tự tin: {classification.confidence})"
+            )
             logger.info(f"   Root Cause: {classification.root_cause}")
             return classification
         except Exception as e:

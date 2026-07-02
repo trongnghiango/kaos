@@ -12,7 +12,7 @@ import logging
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from kaos.application.ports import CodeGraphRepositoryPort, CodeScannerPort
 from kaos.domain.code_graph import CodeFunctionNode
@@ -47,8 +47,8 @@ class ScanCodebaseUseCase:
         target_path: str,
         structural_only: bool = False,
         incremental: bool = False,
-        files: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        files: list[str] | None = None,
+    ) -> dict[str, Any]:
         """
         Execute codebase scan.
 
@@ -93,9 +93,7 @@ class ScanCodebaseUseCase:
                 enriched_count = sum(1 for n in nodes if n.description)
                 logger.info(f"🧠 Enriched {enriched_count}/{len(nodes)} nodes")
             except Exception as e:
-                logger.warning(
-                    f"⚠️ Semantic enrichment partially failed: {e}"
-                )
+                logger.warning(f"⚠️ Semantic enrichment partially failed: {e}")
                 # Tiếp tục với nodes chưa enrich — không block pipeline
 
         # Bước 3: Merge với existing nodes nếu chạy incremental/partial scan
@@ -106,16 +104,15 @@ class ScanCodebaseUseCase:
                     # Lấy set các file đã được scan trong lượt này
                     # Nếu là incremental, files là danh sách changed_files
                     scanned_files = set(files) if files else set()
-                    
+
                     # Giữ lại các node cũ KHÔNG thuộc các file vừa được quét lại
-                    remaining_nodes = [
-                        n for n in existing_nodes
-                        if n.file_path not in scanned_files
-                    ]
-                    
+                    remaining_nodes = [n for n in existing_nodes if n.file_path not in scanned_files]
+
                     # Gộp nodes cũ còn lại với nodes mới
                     nodes = remaining_nodes + nodes
-                    logger.info(f"🔄 Incremental merge: combined {len(nodes)} total nodes ({len(remaining_nodes)} existing)")
+                    logger.info(
+                        f"🔄 Incremental merge: combined {len(nodes)} total nodes ({len(remaining_nodes)} existing)"
+                    )
             except Exception as e:
                 logger.warning(f"⚠️ Failed to load existing nodes for incremental merge: {e}")
 
@@ -143,13 +140,13 @@ class ScanCodebaseUseCase:
 
     # ── Private Helpers ────────────────────────────────────────────────
 
-    def _build_call_graph(self, nodes: List[CodeFunctionNode]) -> None:
+    def _build_call_graph(self, nodes: list[CodeFunctionNode]) -> None:
         """
         Build reverse call graph: điền caller_functions cho mỗi node.
         Đây là bước rule-based, không dùng LLM.
         """
         # Build callee → [callers] map
-        callers_of: Dict[str, List[str]] = {}
+        callers_of: dict[str, list[str]] = {}
         for n in nodes:
             for callee in n.callee_functions:
                 caller_id = f"{n.file_path}::{n.function_name}"
@@ -162,7 +159,7 @@ class ScanCodebaseUseCase:
                 full_name = f"{n.class_name}.{n.function_name}"
             n.caller_functions = callers_of.get(full_name, [])
 
-    def _get_changed_files(self, target_path: str) -> List[str]:
+    def _get_changed_files(self, target_path: str) -> list[str]:
         """Dùng git diff HEAD để tìm file thay đổi, chuyển thành relative path so với target_path."""
         try:
             # 1. Tìm git root dir
@@ -171,7 +168,7 @@ class ScanCodebaseUseCase:
                 capture_output=True,
                 text=True,
                 timeout=10,
-                check=True
+                check=True,
             )
             git_root = Path(git_root_res.stdout.strip()).resolve()
             target_path_abs = Path(target_path).resolve()
@@ -183,7 +180,7 @@ class ScanCodebaseUseCase:
                 text=True,
                 timeout=30,
             )
-            
+
             changed = []
             for line in result.stdout.split("\n"):
                 f_str = line.strip()
@@ -192,10 +189,10 @@ class ScanCodebaseUseCase:
                 # Chỉ xử lý file .ts và .tsx
                 if not (f_str.endswith(".ts") or f_str.endswith(".tsx")):
                     continue
-                
+
                 # Biến đổi thành absolute path
                 abs_file = (git_root / f_str).resolve()
-                
+
                 # Kiểm tra xem file có nằm trong target_path không
                 try:
                     relative_to_target = abs_file.relative_to(target_path_abs)
@@ -209,10 +206,10 @@ class ScanCodebaseUseCase:
             logger.warning(f"⚠️ Git diff failed: {e}")
             return []
 
-    def _get_all_ts_files(self, target_path: str) -> List[str]:
+    def _get_all_ts_files(self, target_path: str) -> list[str]:
         """Liệt kê tất cả .ts files (trừ node_modules, dist, .git)."""
         exclude_dirs = {"node_modules", ".git", "dist", "coverage", "build"}
-        ts_files: List[str] = []
+        ts_files: list[str] = []
 
         root = Path(target_path)
         try:
@@ -220,9 +217,7 @@ class ScanCodebaseUseCase:
                 # Skip excluded dirs, .d.ts, .spec.ts, .test.ts
                 if any(part in exclude_dirs for part in f.relative_to(root).parts):
                     continue
-                if f.name.endswith(".d.ts") or f.name.endswith(
-                    ".spec.ts"
-                ) or f.name.endswith(".test.ts"):
+                if f.name.endswith(".d.ts") or f.name.endswith(".spec.ts") or f.name.endswith(".test.ts"):
                     continue
                 ts_files.append(str(f.relative_to(root)))
         except Exception as e:

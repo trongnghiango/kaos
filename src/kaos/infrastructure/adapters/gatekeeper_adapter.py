@@ -8,11 +8,10 @@ Gọi TypeScript Compiler & Jest testing thông qua TS Bridge (executor.ts).
 import json
 import logging
 from pathlib import Path
-from typing import List, Tuple
 
-from kaos.application.ports import GatekeeperPort
-from kaos.executor_facade import run_command_async, is_sandbox_enabled
 import kaos.config as config
+from kaos.application.ports import GatekeeperPort
+from kaos.executor_facade import is_sandbox_enabled, run_command_async
 
 logger = logging.getLogger("STAX_Harness")
 
@@ -66,7 +65,7 @@ class TsGatekeeperAdapter(GatekeeperPort):
                 self.cmd_prefix + [self.executor_script],
                 cwd=str(config.TARGET_PATH),
                 capture_output=True,
-                stdin_data=json.dumps(task_data)
+                stdin_data=json.dumps(task_data),
             )
 
             # Phân tích kết quả stdout
@@ -84,7 +83,7 @@ class TsGatekeeperAdapter(GatekeeperPort):
             logger.error(f"❌ Trích xuất Schema lỗi: {e}")
             raise e
 
-    async def compile_check(self, module: str, task_id: str) -> Tuple[bool, str]:
+    async def compile_check(self, module: str, task_id: str) -> tuple[bool, str]:
         compile_ctx = {"action": "compile", "module": module}
 
         try:
@@ -92,7 +91,7 @@ class TsGatekeeperAdapter(GatekeeperPort):
                 self.cmd_prefix + [self.executor_script],
                 cwd=str(config.TARGET_PATH),
                 capture_output=True,
-                stdin_data=json.dumps(compile_ctx)
+                stdin_data=json.dumps(compile_ctx),
             )
 
             stdout_text = res.stdout.strip() if hasattr(res, "stdout") else ""
@@ -113,8 +112,7 @@ class TsGatekeeperAdapter(GatekeeperPort):
                 raw_tsc_output = (stderr or "") + "\n" + (stdout or "") + "\n" + (error or "")
                 tsc_lines = [l for l in raw_tsc_output.split("\n") if l.strip()]
                 tsc_errors_filtered = [
-                    l for l in tsc_lines
-                    if "error TS" in l or "Cannot find module" in l or "is not a module" in l
+                    l for l in tsc_lines if "error TS" in l or "Cannot find module" in l or "is not a module" in l
                 ]
                 if not tsc_errors_filtered:
                     tsc_errors_filtered = tsc_lines[:30]
@@ -124,15 +122,15 @@ class TsGatekeeperAdapter(GatekeeperPort):
         except Exception as e:
             return False, f"Lỗi thực thi compile_check: {e}"
 
-    async def run_tests(self, module: str, task_id: str) -> Tuple[bool, str]:
+    async def run_tests(self, module: str, task_id: str) -> tuple[bool, str]:
         test_ctx = {"action": "test", "module": module}
-        
+
         try:
             res = await run_command_async(
                 self.cmd_prefix + [self.executor_script],
                 cwd=str(config.TARGET_PATH),
                 capture_output=True,
-                stdin_data=json.dumps(test_ctx)
+                stdin_data=json.dumps(test_ctx),
             )
 
             stdout_text = res.stdout.strip() if hasattr(res, "stdout") else ""
@@ -155,19 +153,15 @@ class TsGatekeeperAdapter(GatekeeperPort):
         except Exception as e:
             return False, f"Lỗi thực thi run_tests: {e}"
 
-    async def check_architecture(self, file_paths: List[str], task_id: str) -> Tuple[bool, List[dict]]:
-        arch_ctx = {
-            "action": "check-architecture",
-            "module": "all",
-            "file_paths": file_paths
-        }
-        
+    async def check_architecture(self, file_paths: list[str], task_id: str) -> tuple[bool, list[dict]]:
+        arch_ctx = {"action": "check-architecture", "module": "all", "file_paths": file_paths}
+
         try:
             res = await run_command_async(
                 self.cmd_prefix + [self.executor_script],
                 cwd=str(config.TARGET_PATH),
                 capture_output=True,
-                stdin_data=json.dumps(arch_ctx)
+                stdin_data=json.dumps(arch_ctx),
             )
 
             stdout_text = res.stdout.strip() if hasattr(res, "stdout") else ""
@@ -179,25 +173,25 @@ class TsGatekeeperAdapter(GatekeeperPort):
                     pass
 
             passed = arch_output.get("success", False)
-            violations = arch_output.get("metrics", []) # TS Bridge outputs violations in metrics
+            violations = arch_output.get("metrics", [])  # TS Bridge outputs violations in metrics
 
             return passed, violations
         except Exception as e:
             logger.error(f"❌ Lỗi check_architecture: {e}")
             return False, []
 
-    async def check_migration(self, module: str, task_id: str) -> Tuple[bool, str, List[str]]:
+    async def check_migration(self, module: str, task_id: str) -> tuple[bool, str, list[str]]:
         migration_ctx = {
             "action": "check-migration",
             "module": module,
         }
-        
+
         try:
             res = await run_command_async(
                 self.cmd_prefix + [self.executor_script],
                 cwd=str(config.TARGET_PATH),
                 capture_output=True,
-                stdin_data=json.dumps(migration_ctx)
+                stdin_data=json.dumps(migration_ctx),
             )
 
             stdout_text = res.stdout.strip() if hasattr(res, "stdout") else ""

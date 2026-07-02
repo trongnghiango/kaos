@@ -5,10 +5,9 @@ Chạy các câu lệnh git trực tiếp thông qua command-line interface.
 Sử dụng executor_facade để an toàn trong cả môi trường Sandbox và Host.
 """
 
-from typing import List, Optional, Tuple
-from kaos.application.ports import GitPort
-from kaos.executor_facade import run_command_async, is_sandbox_enabled
 import kaos.config as config
+from kaos.application.ports import GitPort
+from kaos.executor_facade import run_command_async
 
 
 class GitCliAdapter(GitPort):
@@ -125,7 +124,7 @@ class GitCliAdapter(GitPort):
         return "Unknown or error getting git status"
 
     # --- Merge & Conflict handling ---
-    async def merge(self, branch_name: str) -> Tuple[bool, List[str]]:
+    async def merge(self, branch_name: str) -> tuple[bool, list[str]]:
         """Merge <branch_name> vào nhánh hiện tại. Trả về (success, conflict_files)."""
         try:
             res = await run_command_async(
@@ -137,7 +136,7 @@ class GitCliAdapter(GitPort):
             returncode = getattr(res, "returncode", 1)
             if returncode == 0:
                 return True, []
-            
+
             # Merge thất bại (có conflict) -> lấy danh sách file conflict
             conflict_files = await self.get_conflict_files()
             return False, conflict_files
@@ -145,7 +144,7 @@ class GitCliAdapter(GitPort):
             conflict_files = await self.get_conflict_files()
             return False, conflict_files
 
-    async def get_conflict_files(self) -> List[str]:
+    async def get_conflict_files(self) -> list[str]:
         """Trả về danh sách các file hiện đang ở trạng thái conflict (MERGE)."""
         res = await run_command_async(
             ["git", "diff", "--name-only", "--diff-filter=U"],

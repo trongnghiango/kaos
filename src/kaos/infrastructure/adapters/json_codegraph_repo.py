@@ -17,7 +17,7 @@ import json
 import logging
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from kaos.application.ports import CodeGraphRepositoryPort
 from kaos.domain.code_graph import CodeFunctionNode, CodeNodeType, ImportInfo
@@ -41,13 +41,13 @@ class JsonCodeGraphRepository(CodeGraphRepositoryPort):
         self.callers_file = self.kb_dir / "callers_index.json"
         self.causal_file = self.kb_dir / "causal_graph.json"
 
-        self._cached_nodes: Optional[List[CodeFunctionNode]] = None
-        self._index_by_file: Dict[str, List[CodeFunctionNode]] = {}
-        self._index_by_caller: Dict[str, List[CodeFunctionNode]] = {}
+        self._cached_nodes: list[CodeFunctionNode] | None = None
+        self._index_by_file: dict[str, list[CodeFunctionNode]] = {}
+        self._index_by_caller: dict[str, list[CodeFunctionNode]] = {}
 
         logger.info(f"📂 Knowledge graph directory: {self.kb_dir}")
 
-    def _build_in_memory_indexes(self, nodes: List[CodeFunctionNode]) -> None:
+    def _build_in_memory_indexes(self, nodes: list[CodeFunctionNode]) -> None:
         """Xây dựng lại các index trong bộ nhớ để truy vấn nhanh."""
         self._cached_nodes = nodes
         self._index_by_file = {}
@@ -59,7 +59,7 @@ class JsonCodeGraphRepository(CodeGraphRepositoryPort):
 
     # ── Save ────────────────────────────────────────────────────────────
 
-    async def save_all(self, nodes: List[CodeFunctionNode]) -> None:
+    async def save_all(self, nodes: list[CodeFunctionNode]) -> None:
         """Lưu toàn bộ nodes + rebuild 3 indexes."""
         # 1. Cập nhật in-memory cache & indexes
         self._build_in_memory_indexes(nodes)
@@ -73,7 +73,7 @@ class JsonCodeGraphRepository(CodeGraphRepositoryPort):
         logger.info(f"  💾 Saved {len(nodes)} nodes to functions.json")
 
         # 3. Build index_by_file
-        file_index: Dict[str, List[str]] = {}
+        file_index: dict[str, list[str]] = {}
         for n in nodes:
             file_index.setdefault(n.file_path, []).append(n.function_name)
         self.index_file.write_text(
@@ -82,7 +82,7 @@ class JsonCodeGraphRepository(CodeGraphRepositoryPort):
         )
 
         # 4. Build callers_index (reverse lookup)
-        callers_index: Dict[str, List[str]] = {}
+        callers_index: dict[str, list[str]] = {}
         for n in nodes:
             for callee in n.callee_functions:
                 caller_id = f"{n.file_path}::{n.function_name}"
@@ -93,7 +93,7 @@ class JsonCodeGraphRepository(CodeGraphRepositoryPort):
         )
 
         # 5. Build causal_graph
-        causal_graph: Dict[str, Dict[str, Any]] = {}
+        causal_graph: dict[str, dict[str, Any]] = {}
         for n in nodes:
             key = f"{n.file_path}::{n.function_name}"
             causal_graph[key] = {
@@ -115,7 +115,7 @@ class JsonCodeGraphRepository(CodeGraphRepositoryPort):
 
     # ── Load ────────────────────────────────────────────────────────────
 
-    async def load_all(self) -> List[CodeFunctionNode]:
+    async def load_all(self) -> list[CodeFunctionNode]:
         """Đọc toàn bộ nodes từ storage."""
         if self._cached_nodes is not None:
             return list(self._cached_nodes)
@@ -136,7 +136,7 @@ class JsonCodeGraphRepository(CodeGraphRepositoryPort):
                 )
                 for imp in raw_imports
             ]
-            
+
             # Map node_type string to CodeNodeType enum member
             node_type_str = n.get("node_type", "function")
             try:
@@ -160,11 +160,11 @@ class JsonCodeGraphRepository(CodeGraphRepositoryPort):
         self,
         query: str,
         limit: int = 10,
-    ) -> List[CodeFunctionNode]:
+    ) -> list[CodeFunctionNode]:
         """Fuzzy search theo function_name + keywords."""
         all_nodes = await self.load_all()
         q = query.lower()
-        scored: List[tuple] = []
+        scored: list[tuple] = []
 
         for n in all_nodes:
             score = 0
@@ -184,7 +184,7 @@ class JsonCodeGraphRepository(CodeGraphRepositoryPort):
     async def get_functions_by_file(
         self,
         file_path: str,
-    ) -> List[CodeFunctionNode]:
+    ) -> list[CodeFunctionNode]:
         """Lấy tất cả functions trong 1 file."""
         if self._cached_nodes is None:
             await self.load_all()
@@ -192,13 +192,13 @@ class JsonCodeGraphRepository(CodeGraphRepositoryPort):
 
     async def get_affected_functions(
         self,
-        file_paths: List[str],
-    ) -> List[CodeFunctionNode]:
+        file_paths: list[str],
+    ) -> list[CodeFunctionNode]:
         """Tìm functions bị ảnh hưởng bởi file thay đổi (trực tiếp + gián tiếp)."""
         if self._cached_nodes is None:
             await self.load_all()
 
-        affected_map: Dict[str, CodeFunctionNode] = {}
+        affected_map: dict[str, CodeFunctionNode] = {}
 
         # 1. Trực tiếp: các functions trong các file thay đổi
         for path in file_paths:
@@ -215,7 +215,7 @@ class JsonCodeGraphRepository(CodeGraphRepositoryPort):
 
         return list(affected_map.values())
 
-    async def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self) -> dict[str, Any]:
         """Thống kê: tổng số nodes, số files, số functions exported..."""
         if self._cached_nodes is None:
             await self.load_all()

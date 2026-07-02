@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Optional
 
 from kaos.application.ports import CachePort
 
@@ -21,7 +20,7 @@ class FileCacheAdapter(CachePort):
     Key là hash string, value là dict được serialize thành JSON.
     """
 
-    def __init__(self, cache_dir: Optional[Path] = None):
+    def __init__(self, cache_dir: Path | None = None):
         self._cache_dir = cache_dir or Path.cwd() / ".kaos" / "cache"
 
     def _resolve_path(self, key: str) -> Path:
@@ -29,7 +28,7 @@ class FileCacheAdapter(CachePort):
 
     # ─── Public API ────────────────────────────────────────────
 
-    def get(self, key: str) -> Optional[dict]:
+    def get(self, key: str) -> dict | None:
         path = self._resolve_path(key)
         if not path.exists():
             return None

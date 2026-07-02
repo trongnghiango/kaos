@@ -8,15 +8,15 @@ Mô-đun quản lý việc chạy shell command một cách an toàn:
 - Hỗ trợ chạy Native trên Host khi được yêu cầu rõ ràng (như Git commands)
 - Cung cấp cả sync (run_command) và async (run_command_async) API
 """
+
 import asyncio
 import os
 import subprocess
-import sys
 import time
 from pathlib import Path
 
-from kaos.config import TARGET_PATH as REPO_ROOT, KAOS_ROOT, PROJECT_ROOT, logger
 import kaos.config as config
+from kaos.config import PROJECT_ROOT, logger
 
 SANDBOX_CONTAINER = "stax_ai_sandbox"
 COMPOSE_FILE = PROJECT_ROOT / "configs" / "docker-compose.sandbox.yml"
@@ -42,7 +42,7 @@ def ensure_sandbox_running() -> bool:
             ["docker", "inspect", "-f", "{{.State.Running}}", SANDBOX_CONTAINER],
             capture_output=True,
             text=True,
-            check=False
+            check=False,
         )
         if result.stdout.strip() == "true":
             return True
@@ -51,10 +51,14 @@ def ensure_sandbox_running() -> bool:
 
         # Dựng container sandbox lên
         compose_cmd = [
-            "docker", "compose",
-            "-f", str(COMPOSE_FILE),
-            "--project-directory", str(COMPOSE_FILE.parent),
-            "up", "-d"
+            "docker",
+            "compose",
+            "-f",
+            str(COMPOSE_FILE),
+            "--project-directory",
+            str(COMPOSE_FILE.parent),
+            "up",
+            "-d",
         ]
         subprocess.run(compose_cmd, check=True, capture_output=True)
 
@@ -71,6 +75,7 @@ def ensure_sandbox_running() -> bool:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _build_sandbox_cmd(cmd_list, cwd=None, stdin_data=None):
     """
@@ -96,18 +101,25 @@ def _build_sandbox_cmd(cmd_list, cwd=None, stdin_data=None):
     docker_cmd = ["docker", "exec"]
     if stdin_data is not None:
         docker_cmd.append("-i")
-    docker_cmd.extend([
-        "-e", "NODE_PATH=/app/backend/node_modules:/app/tools/kaos/node_modules",
-        "-w", sandbox_cwd,
-        SANDBOX_CONTAINER,
-        "bash", "-c", cmd_str
-    ])
+    docker_cmd.extend(
+        [
+            "-e",
+            "NODE_PATH=/app/backend/node_modules:/app/tools/kaos/node_modules",
+            "-w",
+            sandbox_cwd,
+            SANDBOX_CONTAINER,
+            "bash",
+            "-c",
+            cmd_str,
+        ]
+    )
 
     return docker_cmd, cmd_str
 
 
 def _build_result(returncode, stdout_text, stderr_text):
     """Tạo object kết quả có interface giống subprocess.CompletedProcess"""
+
     class _Result:
         def __init__(self, rc, out, err):
             self.returncode = rc
@@ -125,8 +137,10 @@ def _build_result(returncode, stdout_text, stderr_text):
 # Sync API (giữ nguyên interface cũ cho backward compatibility)
 # ---------------------------------------------------------------------------
 
-def run_command(cmd_list: list, cwd=None, env=None, capture_output=False,
-                timeout=None, force_host=False, stdin_data=None):
+
+def run_command(
+    cmd_list: list, cwd=None, env=None, capture_output=False, timeout=None, force_host=False, stdin_data=None
+):
     """
     Thực thi shell command (SYNC wrapper).
 
@@ -149,8 +163,13 @@ def run_command(cmd_list: list, cwd=None, env=None, capture_output=False,
 
     return asyncio.run(
         run_command_async(
-            cmd_list, cwd=cwd, env=env, capture_output=capture_output,
-            timeout=timeout, force_host=force_host, stdin_data=stdin_data
+            cmd_list,
+            cwd=cwd,
+            env=env,
+            capture_output=capture_output,
+            timeout=timeout,
+            force_host=force_host,
+            stdin_data=stdin_data,
         )
     )
 
@@ -159,8 +178,10 @@ def run_command(cmd_list: list, cwd=None, env=None, capture_output=False,
 # Async API (non-blocking với asyncio.create_subprocess_exec)
 # ---------------------------------------------------------------------------
 
-async def run_command_async(cmd_list, cwd=None, env=None, capture_output=False,
-                            timeout=None, force_host=False, stdin_data=None):
+
+async def run_command_async(
+    cmd_list, cwd=None, env=None, capture_output=False, timeout=None, force_host=False, stdin_data=None
+):
     """
     Async version — sử dụng ``asyncio.create_subprocess_exec`` để non-blocking.
 
@@ -202,8 +223,7 @@ async def run_command_async(cmd_list, cwd=None, env=None, capture_output=False,
         # Chế độ capture — chờ toàn bộ output rồi trả về
         try:
             stdout_data, stderr_data = await asyncio.wait_for(
-                process.communicate(input=stdin_bytes),
-                timeout=timeout_val
+                process.communicate(input=stdin_bytes), timeout=timeout_val
             )
         except asyncio.TimeoutError:
             process.kill()
@@ -238,7 +258,7 @@ async def run_command_async(cmd_list, cwd=None, env=None, capture_output=False,
                     _read_stream(process.stdout, stdout_lines, "[stdout]"),
                     _read_stream(process.stderr, stderr_lines, "[stderr]"),
                 ),
-                timeout=timeout_val
+                timeout=timeout_val,
             )
             await process.wait()
         except asyncio.TimeoutError:
